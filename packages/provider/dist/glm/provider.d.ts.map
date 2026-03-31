@@ -1,0 +1,1 @@
+{"version":3,"file":"provider.d.ts","sourceRoot":"","sources":["../../src/glm/provider.ts"],"names":[],"mappings":"AAAA,OAAO,EAAoC,KAAK,aAAa,EAAE,MAAM,aAAa,CAAC;AAKnF,MAAM,WAAW,wBAAwB;IACvC,MAAM,EAAE,MAAM,CAAC;IACf,OAAO,CAAC,EAAE,MAAM,CAAC;IACjB,YAAY,CAAC,EAAE,MAAM,CAAC;IACtB,SAAS,CAAC,EAAE,MAAM,CAAC;CACpB;AAED,eAAO,MAAM,iBAAiB,GAAI,SAAS,wBAAwB,KAAG,aAgBrE,CAAC"}

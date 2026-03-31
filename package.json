@@ -1,0 +1,38 @@
+{
+  "name": "renx-code-v3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "clean": "pnpm -r clean",
+    "dev": "pnpm --filter @renx/app run dev",
+    "dev:watch": "pnpm --filter @renx/app run dev:watch",
+    "dev:all": "concurrently -n app,test -c cyan,yellow \"pnpm run dev:watch\" \"pnpm run test:watch\"",
+    "lint": "oxlint . --vitest-plugin --node-plugin --ignore-pattern dist --ignore-pattern coverage",
+    "lint:fix": "oxlint . --fix --vitest-plugin --node-plugin --ignore-pattern dist --ignore-pattern coverage",
+    "format": "oxfmt .",
+    "format:check": "oxfmt . --check",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "test": "vitest run",
+    "test:watch": "vitest --watch",
+    "demo": "pnpm run dev",
+    "ci": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm build && pnpm test",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "concurrently": "latest",
+    "husky": "latest",
+    "oxfmt": "latest",
+    "oxlint": "latest",
+    "tsup": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.31.0"
+}
