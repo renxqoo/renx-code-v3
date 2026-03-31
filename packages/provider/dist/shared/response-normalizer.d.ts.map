@@ -1,0 +1,1 @@
+{"version":3,"file":"response-normalizer.d.ts","sourceRoot":"","sources":["../../src/shared/response-normalizer.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,aAAa,EAAE,gBAAgB,EAAE,kBAAkB,EAAE,MAAM,aAAa,CAAC;AAIvF,qBAAa,wBAAyB,YAAW,kBAAkB;IACjE,SAAS,CAAC,QAAQ,EAAE,gBAAgB,GAAG,aAAa;CA4BrD"}

@@ -15,16 +15,24 @@ import {
   sleep,
   isNormalizedModelError,
 } from "./retry";
-import type { ModelRequest, ModelResponse, RegisteredModel, ResolvedModel } from "./types";
+import type {
+  ModelRequest,
+  ModelResponse,
+  ModelStreamEvent,
+  RegisteredModel,
+  ResolvedModel,
+} from "./types";
 
 export interface ModelClient {
   generate(request: ModelRequest): Promise<ModelResponse>;
+  stream(request: ModelRequest): AsyncIterable<ModelStreamEvent>;
   resolve(model: string): ResolvedModel;
 }
 
 export interface ModelProvider {
   name: string;
   adapter: ModelAdapter;
+  inferModel?: (model: string) => string | null;
 }
 
 export type ModelResolver = (model: string) => RegisteredModel;
@@ -39,6 +47,15 @@ interface ResolvedAdapterModel {
   adapter: ModelAdapter;
   model: ResolvedModel;
 }
+
+type ObserverBase = {
+  attempt: number;
+  maxAttempts: number;
+  logicalModel: string;
+  provider: string;
+  providerModel: string;
+  request: ModelObserverRequest;
+};
 
 export class DefaultModelClient implements ModelClient {
   private readonly providers = new Map<string, ModelAdapter>();
@@ -64,49 +81,22 @@ export class DefaultModelClient implements ModelClient {
       const providerRequest = toProviderModelRequest(currentRequest, resolved.model);
       const requestDescriptor = await describeRequest(resolved.adapter, providerRequest);
       const requestSummary = createObserverRequest(providerRequest, requestDescriptor);
+      const base = this.observerBase(attempt, maxAttempts, resolved.model, requestSummary);
 
-      await this.observe(
-        {
-          status: "attempting",
-          attempt,
-          maxAttempts,
-          logicalModel: resolved.model.logicalModel,
-          provider: resolved.model.provider,
-          providerModel: resolved.model.providerModel,
-          request: requestSummary,
-        },
-        observer,
-      );
+      await this.observe({ ...base, status: "attempting" }, observer);
 
       try {
         const response = await resolved.adapter.generate(providerRequest);
 
-        await this.observe(
-          {
-            status: "success",
-            attempt,
-            maxAttempts,
-            logicalModel: resolved.model.logicalModel,
-            provider: resolved.model.provider,
-            providerModel: resolved.model.providerModel,
-            request: requestSummary,
-            responseType: response.type,
-          },
-          observer,
-        );
+        await this.observe({ ...base, status: "success", responseType: response.type }, observer);
 
         return response;
       } catch (error) {
         if (this.retryOptions === false || !isNormalizedModelError(error)) {
           await this.observe(
             {
+              ...base,
               status: "failed",
-              attempt,
-              maxAttempts,
-              logicalModel: resolved.model.logicalModel,
-              provider: resolved.model.provider,
-              providerModel: resolved.model.providerModel,
-              request: requestSummary,
               ...(isNormalizedModelError(error)
                 ? { error: toObserverError(error) }
                 : { error: toUnknownObserverError(error) }),
@@ -128,16 +118,7 @@ export class DefaultModelClient implements ModelClient {
 
         if (plannedRetry === null) {
           await this.observe(
-            {
-              status: "failed",
-              attempt,
-              maxAttempts,
-              logicalModel: resolved.model.logicalModel,
-              provider: resolved.model.provider,
-              providerModel: resolved.model.providerModel,
-              request: requestSummary,
-              error: toObserverError(error),
-            },
+            { ...base, status: "failed", error: toObserverError(error) },
             observer,
           );
 
@@ -146,13 +127,8 @@ export class DefaultModelClient implements ModelClient {
 
         await this.observe(
           {
+            ...base,
             status: "retrying",
-            attempt,
-            maxAttempts,
-            logicalModel: resolved.model.logicalModel,
-            provider: resolved.model.provider,
-            providerModel: resolved.model.providerModel,
-            request: requestSummary,
             delayMs: plannedRetry.delayMs,
             error: toObserverError(error),
           },
@@ -167,6 +143,104 @@ export class DefaultModelClient implements ModelClient {
 
   resolve(model: string): ResolvedModel {
     return this.resolveAdapterModel(model).model;
+  }
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    const maxAttempts = this.retryOptions === false ? 1 : this.retryOptions.maxAttempts;
+    const observer = request.observer;
+    let currentRequest = request;
+
+    // Phase 1: Retry loop for connection — only before first event is yielded
+    let iterator: AsyncIterator<ModelStreamEvent> | undefined;
+
+    for (let attempt = 1; iterator === undefined; attempt += 1) {
+      const resolved = this.resolveAdapterModel(currentRequest.model);
+
+      if (resolved.adapter.stream === undefined) {
+        throw new Error(`Streaming not supported for model: ${currentRequest.model}`);
+      }
+
+      const providerRequest = toProviderModelRequest(currentRequest, resolved.model);
+      const requestDescriptor = await describeRequest(resolved.adapter, providerRequest);
+      const requestSummary = createObserverRequest(providerRequest, requestDescriptor);
+      const base = this.observerBase(attempt, maxAttempts, resolved.model, requestSummary);
+
+      await this.observe({ ...base, status: "attempting" }, observer);
+
+      const iterable = resolved.adapter.stream(providerRequest);
+      const candidate = iterable[Symbol.asyncIterator]();
+
+      try {
+        const result = await candidate.next();
+
+        await this.observe({ ...base, status: "success", responseType: "stream" }, observer);
+
+        if (!result.done) {
+          yield result.value;
+        }
+
+        iterator = candidate;
+      } catch (error) {
+        if (
+          attempt >= maxAttempts ||
+          this.retryOptions === false ||
+          !isNormalizedModelError(error)
+        ) {
+          await this.observe(
+            {
+              ...base,
+              status: "failed",
+              ...(isNormalizedModelError(error)
+                ? { error: toObserverError(error) }
+                : { error: toUnknownObserverError(error) }),
+            },
+            observer,
+          );
+
+          throw error;
+        }
+
+        const context = createRetryContext(
+          attempt,
+          this.retryOptions.maxAttempts,
+          currentRequest,
+          resolved.model,
+          error,
+        );
+        const plannedRetry = await planModelRetry(context, this.retryOptions);
+
+        if (plannedRetry === null) {
+          await this.observe(
+            { ...base, status: "failed", error: toObserverError(error) },
+            observer,
+          );
+
+          throw error;
+        }
+
+        await this.observe(
+          {
+            ...base,
+            status: "retrying",
+            delayMs: plannedRetry.delayMs,
+            error: toObserverError(error),
+          },
+          observer,
+        );
+
+        await sleep(plannedRetry.delayMs);
+        currentRequest = plannedRetry.request;
+      }
+    }
+
+    // Phase 2: Yield remaining events without retry (mid-stream)
+    while (true) {
+      const result = await iterator!.next();
+
+      if (result.done) break;
+
+      yield result.value;
+    }
   }
 
   private resolveAdapterModel(model: string): ResolvedAdapterModel {
@@ -192,6 +266,22 @@ export class DefaultModelClient implements ModelClient {
     };
   }
 
+  private observerBase(
+    attempt: number,
+    maxAttempts: number,
+    model: ResolvedModel,
+    request: ModelObserverRequest,
+  ): ObserverBase {
+    return {
+      attempt,
+      maxAttempts,
+      logicalModel: model.logicalModel,
+      provider: model.provider,
+      providerModel: model.providerModel,
+      request,
+    };
+  }
+
   private async observe(state: ModelObserverState, observer?: ModelObserver): Promise<void> {
     if (observer === undefined) {
       return;
@@ -199,7 +289,9 @@ export class DefaultModelClient implements ModelClient {
 
     try {
       await observer(state);
-    } catch {}
+    } catch (observerError) {
+      console.error("[ModelClient] Observer error:", observerError);
+    }
   }
 }
 

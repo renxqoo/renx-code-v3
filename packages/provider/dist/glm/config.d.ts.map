@@ -1,1 +1,0 @@
-{"version":3,"file":"config.d.ts","sourceRoot":"","sources":["../../src/glm/config.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,cAAc;IAC7B,EAAE,EAAE,MAAM,CAAC;IACX,QAAQ,EAAE,KAAK,CAAC;IAChB,IAAI,EAAE,MAAM,CAAC;IACb,OAAO,EAAE,MAAM,CAAC;IAChB,YAAY,EAAE,MAAM,CAAC;IACrB,KAAK,EAAE,MAAM,CAAC;CACf;AAED,eAAO,MAAM,mBAAmB,EAAE,cAOjC,CAAC"}

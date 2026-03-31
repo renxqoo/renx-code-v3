@@ -11,4 +11,12 @@ describe("createOpenAIProvider", () => {
     expect(provider.name).toBe("openai");
     expect(provider.adapter.name).toBe("openai");
   });
+
+  it("infers gpt model names", () => {
+    const provider = createOpenAIProvider({ apiKey: "test-key" });
+
+    expect(provider.inferModel?.("gpt-4o")).toBe("gpt-4o");
+    expect(provider.inferModel?.("o3-mini")).toBe("o3-mini");
+    expect(provider.inferModel?.("claude-sonnet")).toBeNull();
+  });
 });

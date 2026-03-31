@@ -1,0 +1,87 @@
+import { describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { LocalBackend } from "../../src/tool/local-backend";
+
+describe("LocalBackend", () => {
+  const backend = new LocalBackend();
+
+  describe("capabilities()", () => {
+    it("returns correct structure", () => {
+      const caps = backend.capabilities();
+      expect(caps).toEqual({
+        exec: true,
+        filesystemRead: true,
+        filesystemWrite: true,
+        network: true,
+      });
+    });
+  });
+
+  describe("exec()", () => {
+    it("runs a command and returns output", async () => {
+      const result = await backend.exec("echo hello_world");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.trim()).toBe("hello_world");
+    });
+
+    it("returns non-zero exit code on failure", async () => {
+      const result = await backend.exec("false");
+      expect(result.exitCode).not.toBe(0);
+    });
+  });
+
+  describe("readFile()", () => {
+    it("reads a file", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "local-backend-read-"));
+      try {
+        const filePath = join(dir, "test.txt");
+        await writeFile(filePath, "hello from file", "utf-8");
+        const content = await backend.readFile(filePath);
+        expect(content).toBe("hello from file");
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("writeFile()", () => {
+    it("writes a file", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "local-backend-write-"));
+      try {
+        const filePath = join(dir, "output.txt");
+        await backend.writeFile(filePath, "written content");
+        const content = await backend.readFile(filePath);
+        expect(content).toBe("written content");
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("listFiles()", () => {
+    it("lists directory entries", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "local-backend-list-"));
+      try {
+        await writeFile(join(dir, "a.txt"), "a", "utf-8");
+        await writeFile(join(dir, "b.txt"), "b", "utf-8");
+
+        const entries = await backend.listFiles(dir);
+        expect(entries).toHaveLength(2);
+
+        const names = entries.map((e) => e.path.split("/").pop());
+        expect(names).toContain("a.txt");
+        expect(names).toContain("b.txt");
+
+        for (const entry of entries) {
+          expect(entry.isDirectory).toBe(false);
+          expect(typeof entry.size).toBe("number");
+        }
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+});

@@ -11,7 +11,7 @@ export interface ModelObserverError {
 }
 export interface ModelObserverRequest {
     endpoint?: string;
-    method?: "POST";
+    method?: string;
     messageCount: number;
     toolCount: number;
     hasSystemPrompt: boolean;
@@ -27,7 +27,7 @@ export interface ModelObserverState {
     providerModel: string;
     request: ModelObserverRequest;
     delayMs?: number;
-    responseType?: ModelResponse["type"];
+    responseType?: ModelResponse["type"] | "stream";
     error?: ModelObserverError;
 }
 export type ModelObserver = (state: ModelObserverState) => Promise<void> | void;

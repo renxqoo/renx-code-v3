@@ -19,6 +19,21 @@ var BaseModelAdapter = class {
       method: providerRequest.method ?? "POST"
     };
   }
+  async *withErrorNormalization(request, iterable) {
+    try {
+      for await (const event of iterable) {
+        yield event;
+      }
+    } catch (error) {
+      throw await this.normalizeError(error, request);
+    }
+  }
+  get streamingProvider() {
+    if ("executeStream" in this.provider && this.provider.executeStream !== void 0) {
+      return this.provider;
+    }
+    return void 0;
+  }
 };
 
 // src/retry.ts
@@ -142,45 +157,18 @@ var DefaultModelClient = class {
       const providerRequest = toProviderModelRequest(currentRequest, resolved.model);
       const requestDescriptor = await describeRequest(resolved.adapter, providerRequest);
       const requestSummary = createObserverRequest(providerRequest, requestDescriptor);
-      await this.observe(
-        {
-          status: "attempting",
-          attempt,
-          maxAttempts,
-          logicalModel: resolved.model.logicalModel,
-          provider: resolved.model.provider,
-          providerModel: resolved.model.providerModel,
-          request: requestSummary
-        },
-        observer
-      );
+      const base = this.observerBase(attempt, maxAttempts, resolved.model, requestSummary);
+      await this.observe({ ...base, status: "attempting" }, observer);
       try {
         const response = await resolved.adapter.generate(providerRequest);
-        await this.observe(
-          {
-            status: "success",
-            attempt,
-            maxAttempts,
-            logicalModel: resolved.model.logicalModel,
-            provider: resolved.model.provider,
-            providerModel: resolved.model.providerModel,
-            request: requestSummary,
-            responseType: response.type
-          },
-          observer
-        );
+        await this.observe({ ...base, status: "success", responseType: response.type }, observer);
         return response;
       } catch (error) {
         if (this.retryOptions === false || !isNormalizedModelError(error)) {
           await this.observe(
             {
+              ...base,
               status: "failed",
-              attempt,
-              maxAttempts,
-              logicalModel: resolved.model.logicalModel,
-              provider: resolved.model.provider,
-              providerModel: resolved.model.providerModel,
-              request: requestSummary,
               ...isNormalizedModelError(error) ? { error: toObserverError(error) } : { error: toUnknownObserverError(error) }
             },
             observer
@@ -197,29 +185,15 @@ var DefaultModelClient = class {
         const plannedRetry = await planModelRetry(context, this.retryOptions);
         if (plannedRetry === null) {
           await this.observe(
-            {
-              status: "failed",
-              attempt,
-              maxAttempts,
-              logicalModel: resolved.model.logicalModel,
-              provider: resolved.model.provider,
-              providerModel: resolved.model.providerModel,
-              request: requestSummary,
-              error: toObserverError(error)
-            },
+            { ...base, status: "failed", error: toObserverError(error) },
             observer
           );
           throw error;
         }
         await this.observe(
           {
+            ...base,
             status: "retrying",
-            attempt,
-            maxAttempts,
-            logicalModel: resolved.model.logicalModel,
-            provider: resolved.model.provider,
-            providerModel: resolved.model.providerModel,
-            request: requestSummary,
             delayMs: plannedRetry.delayMs,
             error: toObserverError(error)
           },
@@ -232,6 +206,76 @@ var DefaultModelClient = class {
   }
   resolve(model) {
     return this.resolveAdapterModel(model).model;
+  }
+  async *stream(request) {
+    const maxAttempts = this.retryOptions === false ? 1 : this.retryOptions.maxAttempts;
+    const observer = request.observer;
+    let currentRequest = request;
+    let iterator;
+    for (let attempt = 1; iterator === void 0; attempt += 1) {
+      const resolved = this.resolveAdapterModel(currentRequest.model);
+      if (resolved.adapter.stream === void 0) {
+        throw new Error(`Streaming not supported for model: ${currentRequest.model}`);
+      }
+      const providerRequest = toProviderModelRequest(currentRequest, resolved.model);
+      const requestDescriptor = await describeRequest(resolved.adapter, providerRequest);
+      const requestSummary = createObserverRequest(providerRequest, requestDescriptor);
+      const base = this.observerBase(attempt, maxAttempts, resolved.model, requestSummary);
+      await this.observe({ ...base, status: "attempting" }, observer);
+      const iterable = resolved.adapter.stream(providerRequest);
+      const candidate = iterable[Symbol.asyncIterator]();
+      try {
+        const result = await candidate.next();
+        await this.observe({ ...base, status: "success", responseType: "stream" }, observer);
+        if (!result.done) {
+          yield result.value;
+        }
+        iterator = candidate;
+      } catch (error) {
+        if (attempt >= maxAttempts || this.retryOptions === false || !isNormalizedModelError(error)) {
+          await this.observe(
+            {
+              ...base,
+              status: "failed",
+              ...isNormalizedModelError(error) ? { error: toObserverError(error) } : { error: toUnknownObserverError(error) }
+            },
+            observer
+          );
+          throw error;
+        }
+        const context = createRetryContext(
+          attempt,
+          this.retryOptions.maxAttempts,
+          currentRequest,
+          resolved.model,
+          error
+        );
+        const plannedRetry = await planModelRetry(context, this.retryOptions);
+        if (plannedRetry === null) {
+          await this.observe(
+            { ...base, status: "failed", error: toObserverError(error) },
+            observer
+          );
+          throw error;
+        }
+        await this.observe(
+          {
+            ...base,
+            status: "retrying",
+            delayMs: plannedRetry.delayMs,
+            error: toObserverError(error)
+          },
+          observer
+        );
+        await sleep(plannedRetry.delayMs);
+        currentRequest = plannedRetry.request;
+      }
+    }
+    while (true) {
+      const result = await iterator.next();
+      if (result.done) break;
+      yield result.value;
+    }
   }
   resolveAdapterModel(model) {
     const registeredModel = this.resolveModelEntry(model);
@@ -250,13 +294,24 @@ var DefaultModelClient = class {
       }
     };
   }
+  observerBase(attempt, maxAttempts, model, request) {
+    return {
+      attempt,
+      maxAttempts,
+      logicalModel: model.logicalModel,
+      provider: model.provider,
+      providerModel: model.providerModel,
+      request
+    };
+  }
   async observe(state, observer) {
     if (observer === void 0) {
       return;
     }
     try {
       await observer(state);
-    } catch {
+    } catch (observerError) {
+      console.error("[ModelClient] Observer error:", observerError);
     }
   }
 };
@@ -416,38 +471,106 @@ var HttpProvider = class {
   authProvider;
   defaultTimeoutMs;
   fetchImpl;
+  transportRetryMax;
+  transportRetryBaseDelayMs;
   constructor(options = {}) {
     this.name = options.name ?? "http";
     this.authProvider = options.authProvider;
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 3e4;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.transportRetryMax = options.transportRetry?.maxRetries ?? 2;
+    this.transportRetryBaseDelayMs = options.transportRetry?.baseDelayMs ?? 200;
   }
   async execute(request) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const response = await this.rawFetch(request);
+        const parsedBody = await parseResponseBody(response);
+        return {
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: parsedBody,
+          raw: parsedBody
+        };
+      } catch (error) {
+        if (attempt >= this.transportRetryMax || !isTransientError(error)) {
+          throw error;
+        }
+        await transportBackoff(attempt, this.transportRetryBaseDelayMs);
+      }
+    }
+  }
+  async *executeStream(request) {
+    let response;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        response = await this.rawFetch(request);
+        break;
+      } catch (error) {
+        if (attempt >= this.transportRetryMax || !isTransientError(error)) {
+          throw error;
+        }
+        await transportBackoff(attempt, this.transportRetryBaseDelayMs);
+      }
+    }
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error("Response body is not readable");
+    }
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        yield { raw: decoder.decode(value, { stream: true }) };
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  async rawFetch(request) {
+    const signal = this.buildSignal(request.signal, request.timeoutMs);
     const authHeaders = this.authProvider ? await this.authProvider.getHeaders() : {};
     const response = await this.fetchImpl(request.url, {
       method: request.method ?? "POST",
-      headers: {
-        ...authHeaders,
-        ...request.headers
-      },
+      headers: { ...authHeaders, ...request.headers },
       body: serializeRequestBody(request.body),
-      signal: AbortSignal.timeout(request.timeoutMs ?? this.defaultTimeoutMs)
+      signal
     });
-    const parsedBody = await parseResponseBody(response);
-    const providerResponse = {
-      status: response.status,
-      headers: Object.fromEntries(response.headers.entries()),
-      body: parsedBody,
-      raw: parsedBody
-    };
     if (!response.ok) {
-      throw new HttpProviderError(
-        `Provider request failed with status ${response.status}`,
-        providerResponse
-      );
+      const parsedBody = await parseResponseBody(response);
+      throw new HttpProviderError(`Provider request failed with status ${response.status}`, {
+        status: response.status,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: parsedBody,
+        raw: parsedBody
+      });
     }
-    return providerResponse;
+    return response;
   }
+  buildSignal(external, requestTimeoutMs) {
+    const timeoutMs = requestTimeoutMs ?? this.defaultTimeoutMs;
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    if (external === void 0) {
+      return timeoutSignal;
+    }
+    return AbortSignal.any([external, timeoutSignal]);
+  }
+};
+var isTransientError = (error) => {
+  if (error instanceof TypeError) {
+    return true;
+  }
+  if (error instanceof HttpProviderError) {
+    const status = error.response.status;
+    return status === 502 || status === 503 || status === 504;
+  }
+  return false;
+};
+var transportBackoff = async (attempt, baseDelayMs) => {
+  await new Promise((resolve) => {
+    setTimeout(resolve, baseDelayMs * 2 ** attempt);
+  });
 };
 var serializeRequestBody = (body) => {
   return typeof body === "string" ? body : JSON.stringify(body);
@@ -470,17 +593,11 @@ var parseResponseBody = async (response) => {
 export {
   ApiKeyAuthProvider,
   BaseModelAdapter,
-  DEFAULT_MODEL_RETRY_OPTIONS,
-  DefaultModelClient,
   HttpProvider,
   HttpProviderError,
   ModelError,
   StaticHeaderAuthProvider,
   createModelClient,
-  createNormalizedModelError,
-  isNormalizedModelError,
-  planModelRetry,
-  resolveModelRetryOptions,
-  sleep
+  createNormalizedModelError
 };
 //# sourceMappingURL=index.js.map

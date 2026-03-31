@@ -4,9 +4,12 @@ import {
   BaseModelAdapter,
   ModelError,
   type ModelRequest,
+  type ModelStreamEvent,
   type Provider,
   type ProviderRequest,
   type ProviderResponse,
+  type StreamingProvider,
+  type ProviderStreamChunk,
 } from "../src/index";
 
 class RecordingProvider implements Provider {
@@ -105,5 +108,49 @@ describe("BaseModelAdapter", () => {
       model: "test:model",
       message: "boom",
     });
+  });
+
+  it("normalizes stream errors via withErrorNormalization", async () => {
+    class ThrowingStreamProvider implements StreamingProvider {
+      name = "throwing-stream";
+
+      async execute(): Promise<ProviderResponse> {
+        return { status: 200, headers: {}, body: {} };
+      }
+
+      async *executeStream(): AsyncIterable<ProviderStreamChunk> {
+        yield { raw: "first" };
+        throw new Error("stream boom");
+      }
+    }
+
+    class StreamAdapter extends TestAdapter {
+      async *stream(_request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+        yield* this.withErrorNormalization(_request, this.doStream());
+      }
+
+      private async *doStream(): AsyncIterable<ModelStreamEvent> {
+        yield { type: "text_delta", text: "hello" };
+        throw new Error("stream boom");
+      }
+    }
+
+    const adapter = new StreamAdapter(new ThrowingStreamProvider());
+    const events: ModelStreamEvent[] = [];
+
+    await expect(
+      (async () => {
+        for await (const event of adapter.stream(request)) {
+          events.push(event);
+        }
+      })(),
+    ).rejects.toMatchObject({
+      name: "ModelError",
+      provider: "test",
+      model: "test:model",
+      message: "stream boom",
+    });
+
+    expect(events).toEqual([{ type: "text_delta", text: "hello" }]);
   });
 });

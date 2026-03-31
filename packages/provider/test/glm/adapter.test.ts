@@ -8,7 +8,7 @@ import {
   type ProviderResponse,
 } from "@renx/model";
 
-import { GlmModelAdapter } from "../../src/glm";
+import { OpenAICompatAdapter } from "../../src/shared/adapter";
 
 class RecordingProvider implements Provider {
   name = "recording";
@@ -57,7 +57,7 @@ const request: ModelRequest = {
   tools: [],
 };
 
-describe("GlmModelAdapter", () => {
+describe("OpenAICompatAdapter (glm)", () => {
   it("renders requests to the coding plan endpoint and normalizes final responses", async () => {
     const provider = new RecordingProvider({
       status: 200,
@@ -72,7 +72,10 @@ describe("GlmModelAdapter", () => {
         ],
       },
     });
-    const adapter = new GlmModelAdapter(provider);
+    const adapter = new OpenAICompatAdapter(provider, {
+      name: "glm",
+      endpoint: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+    });
 
     await expect(adapter.generate(request)).resolves.toEqual({
       type: "final",
@@ -87,7 +90,10 @@ describe("GlmModelAdapter", () => {
   });
 
   it("normalizes glm provider errors", async () => {
-    const adapter = new GlmModelAdapter(new RejectingProvider());
+    const adapter = new OpenAICompatAdapter(new RejectingProvider(), {
+      name: "glm",
+      endpoint: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+    });
 
     await expect(adapter.generate(request)).rejects.toMatchObject({
       name: "ModelError",

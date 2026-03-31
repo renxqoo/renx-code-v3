@@ -1,5 +1,5 @@
 import type { NormalizedModelError } from "./errors";
-import type { Provider } from "./provider";
+import type { Provider, StreamingProvider } from "./provider";
 import type {
   ModelRequest,
   ModelResponse,
@@ -45,6 +45,27 @@ export abstract class BaseModelAdapter implements ModelAdapter {
       endpoint: providerRequest.url,
       method: providerRequest.method ?? "POST",
     };
+  }
+
+  protected async *withErrorNormalization(
+    request: ModelRequest,
+    iterable: AsyncIterable<ModelStreamEvent>,
+  ): AsyncIterable<ModelStreamEvent> {
+    try {
+      for await (const event of iterable) {
+        yield event;
+      }
+    } catch (error) {
+      throw await this.normalizeError(error, request);
+    }
+  }
+
+  protected get streamingProvider(): StreamingProvider | undefined {
+    if ("executeStream" in this.provider && this.provider.executeStream !== undefined) {
+      return this.provider as StreamingProvider;
+    }
+
+    return undefined;
   }
 
   protected abstract toProviderRequest(

@@ -8,6 +8,7 @@ export interface AgentMessage {
     createdAt: string;
     name?: string;
     toolCallId?: string;
+    toolCalls?: ToolCall[];
     metadata?: Metadata;
 }
 export interface ToolDefinition {
@@ -29,6 +30,7 @@ export interface ModelRequest {
     maxTokens?: number;
     metadata?: Metadata;
     observer?: ModelObserver;
+    signal?: AbortSignal;
 }
 export type ModelResponse = {
     type: "final";
@@ -53,11 +55,12 @@ export type ModelStreamEvent = {
 };
 export interface ProviderRequest {
     url: string;
-    method?: "POST";
+    method?: string;
     headers: Record<string, string>;
     body: unknown;
     timeoutMs?: number;
     metadata?: Metadata;
+    signal?: AbortSignal;
 }
 export interface ProviderResponse {
     status: number;

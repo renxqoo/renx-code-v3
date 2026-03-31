@@ -26,11 +26,6 @@ export interface ModelErrorInit {
     raw: unknown;
     cause?: unknown;
 }
-export interface ErrorNormalizer {
-    normalize(error: unknown): NormalizedModelError;
-}
-export interface ProviderErrorNormalizer extends ErrorNormalizer {
-}
 export declare class ModelError extends Error implements NormalizedModelError {
     provider: string;
     model?: string;
