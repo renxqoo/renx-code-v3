@@ -1,4 +1,11 @@
-import type { ModelClient, ToolDefinition } from "@renx/model";
+import type {
+  ModelClient,
+  ModelRequest,
+  ModelResponse,
+  ModelStreamEvent,
+  ToolCall,
+  ToolDefinition,
+} from "@renx/model";
 
 import { AgentError } from "./errors";
 import { generateId, isTerminalStatus } from "./helpers";
@@ -410,10 +417,9 @@ export class AgentRuntime {
   /**
    * Streaming variant of run().
    *
-   * Yields AgentStreamEvent for each lifecycle event (model started, tool calls,
-   * tool results, etc.) and returns the final AgentResult.
-   *
-   * Supports AbortSignal via ctx.input.signal for mid-run cancellation.
+   * Uses modelClient.stream() for real token-level streaming.
+   * Yields assistant_delta per token, tool_call_delta for incremental tool args,
+   * and all other agent-level lifecycle events.
    */
   async *stream(ctx: AgentRunContext): AsyncGenerator<AgentStreamEvent, AgentResult> {
     try {
@@ -470,7 +476,18 @@ export class AgentRuntime {
 
         yield { type: "model_started" };
 
-        let modelResponse = await this.modelClient.generate(modelRequest);
+        this.emitAudit(ctx, {
+          type: "model_called",
+          payload: {
+            stepCount: ctx.state.stepCount,
+            messageCount: modelRequest.messages.length,
+            toolCount: modelRequest.tools.length,
+          },
+        });
+
+        // --- Real streaming: consume model token stream ---
+        const streamResult = yield* this.consumeModelStream(modelRequest, ctx);
+        let modelResponse = streamResult.response;
 
         this.emitAudit(ctx, {
           type: "model_returned",
@@ -482,8 +499,6 @@ export class AgentRuntime {
 
         // --- Branch: Final answer ---
         if (modelResponse.type === "final") {
-          yield { type: "assistant_delta", text: modelResponse.output };
-
           ctx = this.patchState(ctx, {}, (s) =>
             this.messageManager.appendAssistantMessage(s, modelResponse.output),
           );
@@ -629,6 +644,48 @@ export class AgentRuntime {
       yield { type: "run_failed", error: agentError };
       return { runId: ctx.state.runId, status: "failed", error: agentError, state: ctx.state };
     }
+  }
+
+  /**
+   * Consume a real model token stream.
+   *
+   * Yields assistant_delta per text token and tool_call_delta for incremental args.
+   * Collects complete text and tool calls, then returns a synthetic ModelResponse.
+   */
+  private async *consumeModelStream(
+    modelRequest: ModelRequest,
+    _ctx: AgentRunContext,
+  ): AsyncGenerator<AgentStreamEvent, { response: ModelResponse }> {
+    let textBuffer = "";
+    const toolCalls: ToolCall[] = [];
+
+    for await (const event of this.modelClient.stream(modelRequest)) {
+      switch (event.type) {
+        case "text_delta":
+          textBuffer += event.text;
+          yield { type: "assistant_delta", text: event.text };
+          break;
+
+        case "tool_call_delta":
+          yield { type: "tool_call_delta", partial: event.partial };
+          break;
+
+        case "tool_call":
+          toolCalls.push(event.call);
+          break;
+
+        case "done":
+          break;
+      }
+    }
+
+    // Build synthetic ModelResponse from accumulated stream data
+    const response: ModelResponse =
+      toolCalls.length > 0
+        ? { type: "tool_calls", toolCalls }
+        : { type: "final", output: textBuffer };
+
+    return { response };
   }
 
   // --- Helpers ---

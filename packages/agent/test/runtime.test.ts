@@ -12,11 +12,20 @@ import { baseCtx } from "./helpers";
 // --- Mock ModelClient ---
 
 function createMockModelClient(responses: ModelResponse[]): ModelClient {
-  let index = 0;
+  let generateIndex = 0;
+  let streamIndex = 0;
   return {
-    generate: async () => responses[index++] ?? { type: "final", output: "done" },
-    stream: async function* () {
-      yield { type: "done" };
+    generate: async () => responses[generateIndex++] ?? { type: "final", output: "done" },
+    async *stream(_request) {
+      const resp = responses[streamIndex++] ?? { type: "final" as const, output: "done" };
+      if (resp.type === "final") {
+        yield { type: "text_delta" as const, text: resp.output };
+      } else if (resp.type === "tool_calls") {
+        for (const call of resp.toolCalls) {
+          yield { type: "tool_call" as const, call };
+        }
+      }
+      yield { type: "done" as const };
     },
     resolve: () => ({
       logicalModel: "test",

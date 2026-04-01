@@ -191,8 +191,8 @@ export type AgentStreamEvent =
   | { type: "run_started"; runId: string }
   | { type: "model_started" }
   | { type: "assistant_delta"; text: string }
+  | { type: "tool_call_delta"; partial: unknown }
   | { type: "tool_call"; call: ToolCall }
   | { type: "tool_result"; result: ToolResult }
-  | { type: "approval_required"; requestId: string }
   | { type: "run_completed"; output: string }
   | { type: "run_failed"; error: AgentError };

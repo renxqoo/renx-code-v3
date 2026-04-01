@@ -15,7 +15,14 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(pnpm format:check)",
-      "Bash(pnpm format)"
+      "Bash(pnpm format)",
+      "Bash(pnpm run:*)",
+      "Bash(pnpm --filter @renx/app run demo)",
+      "Bash(pnpm --filter @renx/app exec tsx src/demo-streaming.ts)",
+      "Bash(pnpm test:*)",
+      "Bash(for f:*)",
+      "Bash(do echo:*)",
+      "Bash(npm run:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

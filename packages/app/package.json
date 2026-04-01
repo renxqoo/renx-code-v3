@@ -8,6 +8,7 @@
     "clean": "node ../../scripts/clean-package.mjs",
     "dev": "tsx src/index.ts",
     "demo": "tsx src/demo.ts",
+    "demo:streaming": "tsx src/demo-streaming.ts",
     "dev:watch": "tsx watch src/index.ts",
     "start": "node dist/index.js"
   },

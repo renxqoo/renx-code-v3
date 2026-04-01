@@ -405,9 +405,6 @@ function printStreamEvent(event: AgentStreamEvent) {
     case "tool_result":
       console.log(`  ▶ tool_result   — ${event.result.content.slice(0, 80)}`);
       break;
-    case "approval_required":
-      console.log(`  ▶ approval_required — requestId: ${event.requestId}`);
-      break;
     case "run_completed":
       console.log(`  ▶ run_completed — output: ${event.output.slice(0, 80)}`);
       break;
