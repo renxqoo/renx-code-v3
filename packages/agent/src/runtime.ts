@@ -1,13 +1,14 @@
 import type { ModelClient, ToolDefinition } from "@renx/model";
 
 import { AgentError } from "./errors";
-import { isTerminalStatus } from "./helpers";
+import { generateId, isTerminalStatus } from "./helpers";
 import { applyStatePatch } from "./state";
 import type {
   AgentStatePatch,
   AgentRunContext,
   AgentResult,
   AgentState,
+  AgentStreamEvent,
   AuditEvent,
   AuditLogger,
   CheckpointStore,
@@ -96,12 +97,6 @@ export class AgentRuntime {
 
       // Run beforeRun middleware
       await this.pipeline.runBeforeRun(ctx);
-
-      // Load memory from MemoryStore
-      if (ctx.services.memory) {
-        const loaded = await ctx.services.memory.load(ctx);
-        ctx = { ...ctx, state: { ...ctx.state, memory: { ...ctx.state.memory, ...loaded } } };
-      }
 
       // Save initial checkpoint
       await this.saveCheckpoint(ctx.state);
@@ -221,7 +216,7 @@ export class AgentRuntime {
             if (needApproval) {
               if (ctx.services.approval) {
                 await ctx.services.approval.create({
-                  id: crypto.randomUUID(),
+                  id: generateId(),
                   runId: ctx.state.runId,
                   toolName: call.name,
                   input: call.input,
@@ -361,11 +356,6 @@ export class AgentRuntime {
       // Run afterRun middleware
       await this.pipeline.runAfterRun(ctx, result);
 
-      // Save memory
-      if (ctx.services.memory?.save) {
-        await ctx.services.memory.save(ctx, ctx.state.memory);
-      }
-
       // Save final checkpoint
       await this.saveCheckpoint(ctx.state);
 
@@ -417,6 +407,230 @@ export class AgentRuntime {
     }
   }
 
+  /**
+   * Streaming variant of run().
+   *
+   * Yields AgentStreamEvent for each lifecycle event (model started, tool calls,
+   * tool results, etc.) and returns the final AgentResult.
+   *
+   * Supports AbortSignal via ctx.input.signal for mid-run cancellation.
+   */
+  async *stream(ctx: AgentRunContext): AsyncGenerator<AgentStreamEvent, AgentResult> {
+    try {
+      const incoming = this.messageManager.normalizeIncoming(ctx.input);
+      for (const msg of incoming) {
+        ctx = this.patchState(ctx, { appendMessages: [msg] });
+      }
+
+      await this.pipeline.runBeforeRun(ctx);
+      await this.saveCheckpoint(ctx.state);
+
+      yield { type: "run_started", runId: ctx.state.runId };
+
+      while (ctx.state.status === "running") {
+        // Check abort signal
+        if (ctx.input.signal?.aborted) {
+          ctx = this.patchState(ctx, { setStatus: "interrupted" });
+          break;
+        }
+
+        ctx = { ...ctx, state: { ...ctx.state, stepCount: ctx.state.stepCount + 1 } };
+
+        if (ctx.state.stepCount > this.maxSteps) {
+          ctx = this.patchState(ctx, {
+            setStatus: "failed",
+            setError: new AgentError({
+              code: "MAX_STEPS_EXCEEDED",
+              message: `Agent exceeded maximum steps (${this.maxSteps})`,
+            }),
+          });
+          break;
+        }
+
+        const effectiveMessages = this.messageManager.buildEffectiveMessages(ctx);
+        const allowedTools = await this.policy.filterTools(ctx, this.toolList);
+        const toolDefs: ToolDefinition[] = allowedTools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: (t.inputSchema as Record<string, unknown>) ?? {
+            type: "object",
+            properties: {},
+          },
+        }));
+
+        let modelRequest = {
+          model: this.model,
+          systemPrompt: this.systemPrompt,
+          messages: effectiveMessages,
+          tools: toolDefs,
+          ...(ctx.input.signal ? { signal: ctx.input.signal } : {}),
+        };
+
+        modelRequest = await this.pipeline.runBeforeModel(ctx, modelRequest);
+
+        yield { type: "model_started" };
+
+        let modelResponse = await this.modelClient.generate(modelRequest);
+
+        this.emitAudit(ctx, {
+          type: "model_returned",
+          payload: { stepCount: ctx.state.stepCount, responseType: modelResponse.type },
+        });
+
+        modelResponse = await this.pipeline.runAfterModel(ctx, modelResponse);
+        ctx = { ...ctx, state: { ...ctx.state, lastModelResponse: modelResponse } };
+
+        // --- Branch: Final answer ---
+        if (modelResponse.type === "final") {
+          yield { type: "assistant_delta", text: modelResponse.output };
+
+          ctx = this.patchState(ctx, {}, (s) =>
+            this.messageManager.appendAssistantMessage(s, modelResponse.output),
+          );
+          ctx = this.patchState(ctx, { setStatus: "completed" });
+          break;
+        }
+
+        // --- Branch: Tool calls ---
+        if (modelResponse.type === "tool_calls") {
+          ctx = this.patchState(ctx, {}, (s) =>
+            this.messageManager.appendAssistantToolCallMessage(s, "", modelResponse.toolCalls),
+          );
+
+          let shouldStop = false;
+          for (const call of modelResponse.toolCalls) {
+            if (ctx.input.signal?.aborted) {
+              shouldStop = true;
+              break;
+            }
+
+            const tool = this.registry.get(call.name);
+            if (!tool) {
+              throw new AgentError({
+                code: "TOOL_NOT_FOUND",
+                message: `Tool not found: ${call.name}`,
+                metadata: { toolName: call.name, toolCallId: call.id },
+              });
+            }
+
+            const canUse = await this.policy.canUseTool(ctx, tool, call.input);
+            if (!canUse) {
+              throw new AgentError({
+                code: "POLICY_DENIED",
+                message: `Tool use denied by policy: ${call.name}`,
+                metadata: { toolName: call.name, toolCallId: call.id },
+              });
+            }
+
+            yield { type: "tool_call", call };
+
+            const execResult = await this.toolExecutor.run(call, ctx);
+
+            if (execResult.type === "stopped") {
+              for (const patch of execResult.statePatches) {
+                ctx = this.patchState(ctx, patch);
+              }
+              shouldStop = true;
+              break;
+            }
+
+            const { result: toolResult } = execResult;
+
+            for (const patch of execResult.statePatches) {
+              ctx = this.patchState(ctx, patch);
+            }
+
+            if (toolResult.output.statePatch) {
+              ctx = this.patchState(ctx, toolResult.output.statePatch);
+            }
+
+            let outputContent = toolResult.output.content;
+            if (this.policy.redactOutput) {
+              const redacted = await this.policy.redactOutput(ctx, outputContent);
+              if (redacted !== undefined) outputContent = redacted;
+            }
+
+            ctx = this.patchState(ctx, {}, (s) =>
+              this.messageManager.appendToolResultMessage(
+                s,
+                toolResult.tool.name,
+                toolResult.call.id,
+                outputContent,
+              ),
+            );
+
+            ctx = {
+              ...ctx,
+              state: { ...ctx.state, lastToolCall: call, lastToolResult: toolResult.output },
+            };
+
+            yield { type: "tool_result", result: toolResult.output };
+
+            await this.saveCheckpoint(ctx.state);
+
+            if (execResult.shouldStop) {
+              shouldStop = true;
+              break;
+            }
+          }
+
+          if (shouldStop) break;
+          continue;
+        }
+
+        // Unknown response type
+        ctx = this.patchState(ctx, {
+          setStatus: "failed",
+          setError: new AgentError({
+            code: "SYSTEM_ERROR",
+            message: `Unexpected model response type`,
+          }),
+        });
+        break;
+      }
+
+      // Finalize
+      const result: AgentResult = {
+        runId: ctx.state.runId,
+        status: ctx.state.status,
+        state: ctx.state,
+      };
+      if (ctx.state.lastModelResponse?.type === "final")
+        result.output = ctx.state.lastModelResponse.output;
+      if (ctx.state.error) result.error = ctx.state.error;
+
+      await this.pipeline.runAfterRun(ctx, result);
+      await this.saveCheckpoint(ctx.state);
+
+      if (result.status === "completed") {
+        yield { type: "run_completed", output: result.output ?? "" };
+      } else if (result.error) {
+        yield { type: "run_failed", error: result.error };
+      }
+
+      return result;
+    } catch (error) {
+      const agentError =
+        error instanceof AgentError
+          ? error
+          : new AgentError({
+              code: "SYSTEM_ERROR",
+              message: error instanceof Error ? error.message : "Unknown error",
+              cause: error,
+            });
+
+      ctx = {
+        ...ctx,
+        state: applyStatePatch(ctx.state, { setStatus: "failed", setError: agentError }),
+      };
+      await this.pipeline.runOnError(ctx, agentError);
+      await this.saveCheckpoint(ctx.state);
+
+      yield { type: "run_failed", error: agentError };
+      return { runId: ctx.state.runId, status: "failed", error: agentError, state: ctx.state };
+    }
+  }
+
   // --- Helpers ---
 
   private patchState(
@@ -451,7 +665,7 @@ export class AgentRuntime {
   ): void {
     if (!this.audit) return;
     this.audit.log({
-      id: crypto.randomUUID(),
+      id: generateId(),
       runId: ctx.state.runId,
       ...event,
       timestamp: new Date().toISOString(),

@@ -1,7 +1,9 @@
+import { generateId } from "./helpers";
 import type { ModelClient } from "@renx/model";
 
 import { AgentRuntime, type RuntimeConfig } from "./runtime";
 import { MiddlewarePipeline } from "./middleware/pipeline";
+import { AgentMemoryMiddleware } from "./middleware/agent-memory";
 import type { AgentMiddleware } from "./middleware/types";
 import { AllowAllPolicy } from "./policy";
 import type {
@@ -11,10 +13,11 @@ import type {
   AgentRunContext,
   AgentServices,
   AgentState,
+  AgentStreamEvent,
   CheckpointStore,
   AuditLogger,
   ApprovalService,
-  MemoryStore,
+  Store,
   PolicyEngine,
 } from "./types";
 import type { AgentTool, BackendResolver } from "./tool/types";
@@ -75,7 +78,7 @@ export abstract class EnterpriseAgentBase {
     return undefined;
   }
 
-  protected getMemoryStore(): MemoryStore | undefined {
+  protected getMemoryStore(): Store | undefined {
     return undefined;
   }
 
@@ -103,6 +106,16 @@ export abstract class EnterpriseAgentBase {
   }
 
   /**
+   * Stream the agent execution, yielding lifecycle events as they occur.
+   * Returns the final AgentResult after all events have been yielded.
+   */
+  async *stream(input: AgentInput): AsyncGenerator<AgentStreamEvent, AgentResult> {
+    const ctx = await this.createRunContext(input);
+    const runtime = await this.createRuntime(ctx);
+    return yield* runtime.stream(ctx);
+  }
+
+  /**
    * Resume a previously interrupted run from its checkpoint.
    */
   async resume(runId: string, payload?: Record<string, unknown>): Promise<AgentResult> {
@@ -124,7 +137,7 @@ export abstract class EnterpriseAgentBase {
   // --- Protected helpers ---
 
   protected async createRunContext(input: AgentInput): Promise<AgentRunContext> {
-    const runId = crypto.randomUUID();
+    const runId = generateId("run");
 
     const identity = this.getIdentity();
     const state: AgentState = {
@@ -174,13 +187,19 @@ export abstract class EnterpriseAgentBase {
     if (audit) services.audit = audit;
     const approval = this.getApprovalService();
     if (approval) services.approval = approval;
-    const memory = this.getMemoryStore();
-    if (memory) services.memory = memory;
     return services;
   }
 
   protected async createRuntime(ctx: AgentRunContext): Promise<AgentRuntime> {
-    const pipeline = new MiddlewarePipeline(this.getMiddlewares());
+    const middlewares = this.getMiddlewares();
+
+    // Auto-register memory middleware
+    const memoryStore = this.getMemoryStore();
+    if (memoryStore) {
+      middlewares.push(new AgentMemoryMiddleware(memoryStore));
+    }
+
+    const pipeline = new MiddlewarePipeline(middlewares);
 
     const checkpoint = this.getCheckpointStore();
     const audit = this.getAuditLogger();

@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(npx vitest run:*)",
+      "Bash(pnpm lint)",
+      "Bash(echo:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx eslint:*)",
+      "Bash(pnpm run --filter @renx/agent build:*)",
+      "Bash(pnpm --filter @renx/app demo:*)",
+      "Bash(pnpm --filter @renx/model build:*)",
+      "Bash(pnpm --filter @renx/provider build:*)",
+      "Bash(pnpm --filter @renx/agent build:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(pnpm format:check)",
+      "Bash(pnpm format)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": ["sequential-thinking", "context7", "tavily", "shadcn"]
+}

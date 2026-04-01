@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentMessage } from "@renx/model";
-
 import { DefaultMessageManager } from "../../src/message/manager";
 import type { AgentState } from "../../src/types";
+import type { RunMessage } from "../../src/message/types";
 import { baseState } from "../helpers";
 
 describe("DefaultMessageManager", () => {
@@ -20,7 +19,7 @@ describe("DefaultMessageManager", () => {
 
     it("normalizes provided messages", () => {
       const msgs = mgr.normalizeIncoming({
-        messages: [{ id: "", role: "user", content: "hi", createdAt: "" }],
+        messages: [{ id: "", messageId: "", role: "user", content: "hi", createdAt: "" }],
       });
       expect(msgs).toHaveLength(1);
       expect(msgs[0]!.id).toBeTruthy();
@@ -77,9 +76,15 @@ describe("DefaultMessageManager", () => {
 
   describe("validate", () => {
     it("validates a correct sequence", () => {
-      const msgs: AgentMessage[] = [
-        { id: "1", role: "user", content: "hi", createdAt: "2026-01-01T00:00:00Z" },
-        { id: "2", role: "assistant", content: "hello", createdAt: "2026-01-01T00:00:01Z" },
+      const msgs: RunMessage[] = [
+        { id: "1", messageId: "1", role: "user", content: "hi", createdAt: "2026-01-01T00:00:00Z" },
+        {
+          id: "2",
+          messageId: "2",
+          role: "assistant",
+          content: "hello",
+          createdAt: "2026-01-01T00:00:01Z",
+        },
       ];
       const result = mgr.validate(msgs);
       expect(result.valid).toBe(true);
@@ -88,10 +93,11 @@ describe("DefaultMessageManager", () => {
 
   describe("patchToolPairs", () => {
     it("patches missing tool results", () => {
-      const msgs: AgentMessage[] = [
-        { id: "1", role: "user", content: "hi", createdAt: "2026-01-01T00:00:00Z" },
+      const msgs: RunMessage[] = [
+        { id: "1", messageId: "1", role: "user", content: "hi", createdAt: "2026-01-01T00:00:00Z" },
         {
           id: "2",
+          messageId: "2",
           role: "assistant",
           content: "",
           createdAt: "2026-01-01T00:00:01Z",
@@ -109,9 +115,16 @@ describe("DefaultMessageManager", () => {
       const state: AgentState = {
         ...baseState,
         messages: [
-          { id: "1", role: "user", content: "hi", createdAt: "2026-01-01T00:00:00Z" },
+          {
+            id: "1",
+            messageId: "1",
+            role: "user",
+            content: "hi",
+            createdAt: "2026-01-01T00:00:00Z",
+          },
           {
             id: "2",
+            messageId: "2",
             role: "assistant",
             content: "",
             createdAt: "2026-01-01T00:00:01Z",
@@ -133,8 +146,9 @@ describe("DefaultMessageManager", () => {
 
     it("applies history windowing (more than 30 messages)", () => {
       const windowedMgr = new DefaultMessageManager({ maxRecentMessages: 5 });
-      const messages: AgentMessage[] = Array.from({ length: 40 }, (_, i) => ({
+      const messages: RunMessage[] = Array.from({ length: 40 }, (_, i) => ({
         id: `msg_${i}`,
+        messageId: `msg_${i}`,
         role: "user" as const,
         content: `message ${i}`,
         createdAt: new Date(Date.now() + i).toISOString(),
@@ -158,7 +172,15 @@ describe("DefaultMessageManager", () => {
     it("injects memory as a system message at the head", () => {
       const state: AgentState = {
         ...baseState,
-        messages: [{ id: "1", role: "user", content: "hi", createdAt: "2026-01-01T00:00:00Z" }],
+        messages: [
+          {
+            id: "1",
+            messageId: "1",
+            role: "user",
+            content: "hi",
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ],
         memory: { userPrefs: "dark-mode", lang: "en" },
       };
 
@@ -185,7 +207,9 @@ describe("DefaultMessageManager", () => {
     it("when both inputText and messages are provided, messages take precedence", () => {
       const result = mgr.normalizeIncoming({
         inputText: "this is ignored",
-        messages: [{ id: "", role: "user", content: "from messages", createdAt: "" }],
+        messages: [
+          { id: "", messageId: "", role: "user", content: "from messages", createdAt: "" },
+        ],
       });
 
       expect(result).toHaveLength(1);

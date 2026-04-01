@@ -1,8 +1,6 @@
-import type { AgentMessage } from "@renx/model";
-
 import type { AgentState } from "../types";
 
-import type { MessageStatePatch } from "./types";
+import type { MessageStatePatch, RunMessage } from "./types";
 
 /**
  * Immutable message reducer — append or replace.
@@ -22,13 +20,13 @@ export const applyMessagePatch = (state: AgentState, patch: MessageStatePatch): 
 /**
  * Helper to create an append-only patch.
  */
-export const appendMessages = (messages: AgentMessage[]): MessageStatePatch => ({
+export const appendMessages = (messages: RunMessage[]): MessageStatePatch => ({
   appendMessages: messages,
 });
 
 /**
  * Helper to create a replace patch.
  */
-export const replaceMessages = (messages: AgentMessage[]): MessageStatePatch => ({
+export const replaceMessages = (messages: RunMessage[]): MessageStatePatch => ({
   replaceMessages: messages,
 });

@@ -1,15 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentMessage } from "@renx/model";
+import type { RunMessage } from "../../src/message/types";
 
 import { validateMessageSequence } from "../../src/message/validator";
 
-const msg = (
-  id: string,
-  role: AgentMessage["role"],
-  extra?: Partial<AgentMessage>,
-): AgentMessage => ({
+const msg = (id: string, role: RunMessage["role"], extra?: Partial<RunMessage>): RunMessage => ({
   id,
+  messageId: id,
   role,
   content: `${role} ${id}`,
   createdAt: "2026-01-01T00:00:00Z",
@@ -18,7 +15,7 @@ const msg = (
 
 describe("validateMessageSequence", () => {
   it("validates a clean sequence", () => {
-    const messages: AgentMessage[] = [
+    const messages: RunMessage[] = [
       msg("1", "user"),
       msg("2", "assistant", {
         toolCalls: [{ id: "tc_1", name: "get_weather", input: { city: "Beijing" } }],
@@ -70,7 +67,7 @@ describe("validateMessageSequence", () => {
   });
 
   it("catches multiple issues at once", () => {
-    const messages: AgentMessage[] = [
+    const messages: RunMessage[] = [
       msg("1", "user"),
       msg("1", "assistant"), // duplicate ID
       msg("2", "assistant", { toolCalls: [{ id: "tc_1", name: "x", input: {} }] }),
@@ -83,7 +80,7 @@ describe("validateMessageSequence", () => {
   });
 
   it("detects INVALID_ROLE for unknown role", () => {
-    const messages = [msg("1", "unknown_role" as AgentMessage["role"])];
+    const messages = [msg("1", "unknown_role" as RunMessage["role"])];
     const result = validateMessageSequence(messages);
     expect(result.valid).toBe(false);
     expect(result.issues.some((i) => i.code === "INVALID_ROLE")).toBe(true);

@@ -1,5 +1,7 @@
 import type { AgentRunContext, AgentState } from "../src/types";
 
+export { generateId } from "../src/helpers";
+
 export const baseState: AgentState = {
   runId: "run_1",
   messages: [],

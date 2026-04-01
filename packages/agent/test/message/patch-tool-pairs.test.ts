@@ -2,14 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentMessage } from "@renx/model";
 
+import type { RunMessage } from "../../src/message/types";
+
 import { patchToolPairs } from "../../src/message/patch-tool-pairs";
 
-const msg = (
-  id: string,
-  role: AgentMessage["role"],
-  extra?: Partial<AgentMessage>,
-): AgentMessage => ({
+const msg = (id: string, role: AgentMessage["role"], extra?: Partial<RunMessage>): RunMessage => ({
   id,
+  messageId: id,
   role,
   content: `${role} ${id}`,
   createdAt: "2026-01-01T00:00:00Z",
@@ -18,7 +17,7 @@ const msg = (
 
 describe("patchToolPairs", () => {
   it("returns unchanged messages when all pairs are complete", () => {
-    const messages: AgentMessage[] = [
+    const messages: RunMessage[] = [
       msg("1", "user"),
       msg("2", "assistant", { toolCalls: [{ id: "tc_1", name: "get_weather", input: {} }] }),
       msg("3", "tool", { toolCallId: "tc_1", name: "get_weather" }),
@@ -32,7 +31,7 @@ describe("patchToolPairs", () => {
   });
 
   it("inserts synthetic tool result for missing pair", () => {
-    const messages: AgentMessage[] = [
+    const messages: RunMessage[] = [
       msg("1", "user"),
       msg("2", "assistant", {
         toolCalls: [{ id: "tc_1", name: "get_weather", input: { city: "Beijing" } }],
@@ -55,7 +54,7 @@ describe("patchToolPairs", () => {
   });
 
   it("handles multiple missing pairs from the same assistant message", () => {
-    const messages: AgentMessage[] = [
+    const messages: RunMessage[] = [
       msg("1", "user"),
       msg("2", "assistant", {
         toolCalls: [
@@ -73,7 +72,7 @@ describe("patchToolPairs", () => {
   });
 
   it("handles partial pairs (some answered, some missing)", () => {
-    const messages: AgentMessage[] = [
+    const messages: RunMessage[] = [
       msg("1", "user"),
       msg("2", "assistant", {
         toolCalls: [

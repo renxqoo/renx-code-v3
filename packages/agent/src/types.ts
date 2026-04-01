@@ -1,10 +1,11 @@
-import type { AgentMessage, Metadata, ModelResponse, ToolCall } from "@renx/model";
+import type { Metadata, ModelResponse, ToolCall } from "@renx/model";
 
 // Re-export commonly used types from @renx/model
 export type { Metadata } from "@renx/model";
 
 import type { AgentError } from "./errors";
 import type { AgentTool, ToolResult } from "./tool/types";
+import type { RunMessage } from "./message/types";
 
 // Re-export tool types needed by other modules
 export type {
@@ -26,7 +27,7 @@ export type AgentStatus = "running" | "completed" | "failed" | "interrupted" | "
 export interface AgentState {
   runId: string;
   threadId?: string;
-  messages: AgentMessage[];
+  messages: RunMessage[];
   scratchpad: Metadata;
   memory: Metadata;
   stepCount: number;
@@ -40,7 +41,7 @@ export interface AgentState {
 // --- State Patch ---
 
 export interface AgentStatePatch {
-  appendMessages?: AgentMessage[];
+  appendMessages?: RunMessage[];
   setScratchpad?: Metadata;
   mergeMemory?: Metadata;
   setStatus?: AgentStatus;
@@ -59,9 +60,10 @@ export interface AgentIdentity {
 // --- Input ---
 
 export interface AgentInput {
-  messages?: AgentMessage[];
+  messages?: RunMessage[];
   inputText?: string;
   metadata?: Metadata;
+  signal?: AbortSignal;
 }
 
 // --- Service Interfaces ---
@@ -81,10 +83,14 @@ export interface ApprovalService {
   get(requestId: string): Promise<ApprovalDecision | null>;
 }
 
-export interface MemoryStore {
-  load(ctx: AgentRunContext): Promise<Metadata> | Metadata;
-  save?(ctx: AgentRunContext, patch: Metadata): Promise<void> | void;
+/** Generic store interface for any persisted data. */
+export interface Store<T = Metadata> {
+  load(ctx: AgentRunContext): Promise<T> | T;
+  save?(ctx: AgentRunContext, data: T): Promise<void> | void;
 }
+
+/** Backward-compatible alias. */
+export type MemoryStore = Store<Metadata>;
 
 export interface PolicyEngine {
   filterTools(ctx: AgentRunContext, tools: AgentTool[]): Promise<AgentTool[]> | AgentTool[];
@@ -145,13 +151,20 @@ export interface ApprovalDecision {
   decidedAt: string;
 }
 
+// --- Recovery ---
+
+export interface RecoveryConfig {
+  maxOutputTokensRecoveryLimit?: number;
+  maxPromptTooLongRetries?: number;
+}
+
 // --- Run Context ---
 
 export interface AgentServices {
   checkpoint?: CheckpointStore;
   audit?: AuditLogger;
   approval?: ApprovalService;
-  memory?: MemoryStore;
+  recovery?: RecoveryConfig;
 }
 
 export interface AgentRunContext {

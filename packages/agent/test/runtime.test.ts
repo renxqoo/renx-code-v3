@@ -6,7 +6,7 @@ import { AgentRuntime } from "../src/runtime";
 import { InMemoryCheckpointStore } from "../src/checkpoint";
 import { MiddlewarePipeline } from "../src/middleware/pipeline";
 import type { AgentTool, ToolResult } from "../src/tool/types";
-import type { PolicyEngine } from "../src/types";
+import type { AgentResult, PolicyEngine } from "../src/types";
 import { baseCtx } from "./helpers";
 
 // --- Mock ModelClient ---
@@ -391,5 +391,57 @@ describe("AgentRuntime", () => {
       expect(event.runId).toBe(result.runId);
       expect(event.runId).not.toBe("");
     }
+  });
+
+  describe("stream()", () => {
+    it("yields events and returns final result", async () => {
+      const modelClient = createMockModelClient([{ type: "final", output: "Streamed response" }]);
+
+      const runtime = new AgentRuntime(buildRuntimeConfig({ modelClient }));
+      const ctx = baseCtx({ inputText: "Hi" });
+
+      const events: string[] = [];
+      let finalResult: AgentResult | undefined;
+
+      const gen = runtime.stream(ctx);
+      let iter = await gen.next();
+      while (!iter.done) {
+        events.push(iter.value.type);
+        iter = await gen.next();
+      }
+      finalResult = iter.value;
+
+      expect(events).toContain("run_started");
+      expect(events).toContain("model_started");
+      expect(events).toContain("assistant_delta");
+      expect(events).toContain("run_completed");
+      expect(finalResult.status).toBe("completed");
+      expect(finalResult.output).toBe("Streamed response");
+    });
+
+    it("streams tool calls and tool results", async () => {
+      const toolCalls: ToolCall[] = [{ id: "tc_1", name: "echo", input: { msg: "hi" } }];
+
+      const modelClient = createMockModelClient([
+        { type: "tool_calls", toolCalls },
+        { type: "final", output: "After tool" },
+      ]);
+
+      const runtime = new AgentRuntime(buildRuntimeConfig({ modelClient, tools: [echoTool] }));
+
+      const ctx = baseCtx({ inputText: "Use tool" });
+      const events: string[] = [];
+
+      const gen = runtime.stream(ctx);
+      let iter = await gen.next();
+      while (!iter.done) {
+        events.push(iter.value.type);
+        iter = await gen.next();
+      }
+
+      expect(events).toContain("tool_call");
+      expect(events).toContain("tool_result");
+      expect(events).toContain("run_completed");
+    });
   });
 });

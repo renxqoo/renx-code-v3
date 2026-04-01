@@ -1,1 +1,1 @@
-export type { MemoryStore } from "./types";
+export type { Store, MemoryStore } from "./types";

@@ -1,6 +1,4 @@
-import type { AgentMessage } from "@renx/model";
-
-import type { MessageValidationIssue, MessageValidationResult } from "./types";
+import type { MessageValidationIssue, MessageValidationResult, RunMessage } from "./types";
 
 const VALID_ROLES = new Set(["system", "user", "assistant", "tool"]);
 
@@ -14,7 +12,7 @@ const VALID_ROLES = new Set(["system", "user", "assistant", "tool"]);
  * - All assistant `toolCalls` have matching tool results
  * - All tool results reference an existing tool call
  */
-export const validateMessageSequence = (messages: AgentMessage[]): MessageValidationResult => {
+export const validateMessageSequence = (messages: RunMessage[]): MessageValidationResult => {
   const issues: MessageValidationIssue[] = [];
 
   const seenIds = new Set<string>();
@@ -22,22 +20,22 @@ export const validateMessageSequence = (messages: AgentMessage[]): MessageValida
   const answeredToolCallIds = new Set<string>();
 
   for (const msg of messages) {
-    // Duplicate ID check
-    if (seenIds.has(msg.id)) {
+    // Duplicate ID check (using agent-controlled messageId)
+    if (seenIds.has(msg.messageId)) {
       issues.push({
         code: "DUPLICATE_MESSAGE_ID",
-        message: `Duplicate message id: ${msg.id}`,
-        messageId: msg.id,
+        message: `Duplicate message id: ${msg.messageId}`,
+        messageId: msg.messageId,
       });
     }
-    seenIds.add(msg.id);
+    seenIds.add(msg.messageId);
 
     // Role check
     if (!VALID_ROLES.has(msg.role)) {
       issues.push({
         code: "INVALID_ROLE",
         message: `Invalid role: ${msg.role}`,
-        messageId: msg.id,
+        messageId: msg.messageId,
       });
     }
 
@@ -53,8 +51,8 @@ export const validateMessageSequence = (messages: AgentMessage[]): MessageValida
       if (!msg.toolCallId) {
         issues.push({
           code: "MISSING_TOOL_CALL_ID",
-          message: `Tool message missing toolCallId: ${msg.id}`,
-          messageId: msg.id,
+          message: `Tool message missing toolCallId: ${msg.messageId}`,
+          messageId: msg.messageId,
         });
       } else {
         answeredToolCallIds.add(msg.toolCallId);

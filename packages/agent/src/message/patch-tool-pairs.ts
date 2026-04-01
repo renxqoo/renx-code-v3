@@ -1,6 +1,8 @@
-import type { AgentMessage, ToolCall } from "@renx/model";
+import type { ToolCall } from "@renx/model";
 
-import type { PatchToolPairsResult } from "./types";
+import { generateId } from "../helpers";
+
+import type { PatchToolPairsResult, RunMessage } from "./types";
 
 /**
  * Patches assistant tool-call / tool-result pair gaps.
@@ -10,7 +12,7 @@ import type { PatchToolPairsResult } from "./types";
  * `toolCallId`.  For any missing pair, inserts a synthetic tool result
  * message with `metadata: { synthetic: true, patchReason: "missing_tool_result" }`.
  */
-export const patchToolPairs = (messages: AgentMessage[]): PatchToolPairsResult => {
+export const patchToolPairs = (messages: RunMessage[]): PatchToolPairsResult => {
   // Collect all requested tool call IDs
   const requestedToolCalls = new Map<string, { toolName: string; messageIndex: number }>();
 
@@ -54,7 +56,7 @@ export const patchToolPairs = (messages: AgentMessage[]): PatchToolPairsResult =
   }
 
   // Insert synthetic tool result messages after each assistant message
-  const patched: AgentMessage[] = [];
+  const patched: RunMessage[] = [];
   for (let i = 0; i < messages.length; i++) {
     patched.push(messages[i]!);
 
@@ -73,13 +75,15 @@ export const patchToolPairs = (messages: AgentMessage[]): PatchToolPairsResult =
   };
 };
 
-const createSyntheticToolMessage = (toolCallId: string, toolName: string): AgentMessage => ({
+const createSyntheticToolMessage = (toolCallId: string, toolName: string): RunMessage => ({
   id: `patch_${toolCallId}`,
+  messageId: generateId("msg"),
   role: "tool",
   name: toolName,
   toolCallId,
   content: "[Synthetic tool result: missing, interrupted, or rejected]",
   createdAt: new Date().toISOString(),
+  source: "framework",
   metadata: {
     synthetic: true,
     patchReason: "missing_tool_result",

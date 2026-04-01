@@ -26,10 +26,12 @@ export type {
   ApprovalDecision,
   ApprovalService,
   MemoryStore,
+  Store,
+  RecoveryConfig,
 } from "./types";
 
 // --- Helpers ---
-export { isTerminalStatus, shouldPause } from "./helpers";
+export { generateId, isTerminalStatus, shouldPause } from "./helpers";
 
 // --- State ---
 export { applyStatePatch } from "./state";
@@ -41,6 +43,8 @@ export type {
   PatchToolPairsResult,
   MessageStatePatch,
   MessageRenderer,
+  MessageSource,
+  RunMessage,
 } from "./message/types";
 
 export { applyMessagePatch, appendMessages, replaceMessages } from "./message/reducer";
@@ -62,11 +66,12 @@ export type {
   ExecOptions,
   ExecResult,
   FileInfo,
+  ValidationResult,
 } from "./tool/types";
 
 export { InMemoryToolRegistry } from "./tool/registry";
 export { ToolExecutor } from "./tool/executor";
-export type { ToolExecutorRunResult } from "./tool/executor";
+export type { ToolExecutorRunResult, BatchToolResult } from "./tool/executor";
 export { LocalBackend } from "./tool/local-backend";
 export { DefaultBackendResolver } from "./tool/default-backend-resolver";
 
@@ -74,6 +79,8 @@ export { DefaultBackendResolver } from "./tool/default-backend-resolver";
 export type { AgentMiddleware, MiddlewareDecision } from "./middleware/types";
 export type { AggregatedDecision } from "./middleware/pipeline";
 export { MiddlewarePipeline } from "./middleware/pipeline";
+export { AgentMemoryMiddleware } from "./middleware/agent-memory";
+export type { AgentMemoryOptions } from "./middleware/agent-memory";
 
 // --- Policy ---
 export { AllowAllPolicy } from "./policy";

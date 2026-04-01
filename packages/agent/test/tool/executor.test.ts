@@ -16,6 +16,15 @@ const echoTool: AgentTool = {
   }),
 };
 
+const safeTool: AgentTool = {
+  name: "safe-echo",
+  description: "Concurrency-safe echo",
+  invoke: async (input: unknown): Promise<ToolResult> => ({
+    content: JSON.stringify(input),
+  }),
+  isConcurrencySafe: () => true,
+};
+
 const failTool: AgentTool = {
   name: "fail",
   description: "Always fails",
@@ -190,5 +199,98 @@ describe("ToolExecutor", () => {
     expect(toolCtx.runContext).toBe(runCtx);
     expect(toolCtx.toolCall).toBe(call);
     expect(toolCtx.backend).toBeUndefined();
+  });
+
+  describe("runBatch", () => {
+    it("executes multiple tool calls", async () => {
+      const registry = new InMemoryToolRegistry();
+      registry.register(echoTool);
+
+      const calls: ToolCall[] = [
+        { id: "tc_1", name: "echo", input: { a: 1 } },
+        { id: "tc_2", name: "echo", input: { b: 2 } },
+      ];
+
+      const executor = new ToolExecutor(registry, new MiddlewarePipeline());
+      const results = await executor.runBatch(calls, baseCtx());
+
+      expect(results).toHaveLength(2);
+      expect(results[0]!.call.id).toBe("tc_1");
+      expect(results[0]!.result.output.content).toBe('{"a":1}');
+      expect(results[1]!.call.id).toBe("tc_2");
+      expect(results[1]!.result.output.content).toBe('{"b":2}');
+    });
+
+    it("runs concurrency-safe tools in parallel", async () => {
+      const registry = new InMemoryToolRegistry();
+      registry.register(safeTool);
+
+      const executionOrder: string[] = [];
+
+      const trackingTool: AgentTool = {
+        name: "safe-echo",
+        description: "Concurrency-safe echo",
+        invoke: async (input: unknown): Promise<ToolResult> => {
+          const callInput = input as { id: string };
+          executionOrder.push(`start:${callInput.id}`);
+          await new Promise((r) => setTimeout(r, 10));
+          executionOrder.push(`end:${callInput.id}`);
+          return { content: JSON.stringify(input) };
+        },
+        isConcurrencySafe: () => true,
+      };
+
+      const trackingRegistry = new InMemoryToolRegistry();
+      trackingRegistry.register(trackingTool);
+
+      const calls: ToolCall[] = [
+        { id: "tc_1", name: "safe-echo", input: { id: "a" } },
+        { id: "tc_2", name: "safe-echo", input: { id: "b" } },
+      ];
+
+      const executor = new ToolExecutor(trackingRegistry, new MiddlewarePipeline());
+      const results = await executor.runBatch(calls, baseCtx());
+
+      expect(results).toHaveLength(2);
+      // Both should start before either finishes (parallel execution)
+      expect(executionOrder[0]).toContain("start:");
+      expect(executionOrder[1]).toContain("start:");
+    });
+
+    it("returns results in same order as input", async () => {
+      const registry = new InMemoryToolRegistry();
+      registry.register(echoTool);
+      registry.register(safeTool);
+
+      const calls: ToolCall[] = [
+        { id: "tc_1", name: "echo", input: { idx: 0 } },
+        { id: "tc_2", name: "safe-echo", input: { idx: 1 } },
+        { id: "tc_3", name: "echo", input: { idx: 2 } },
+      ];
+
+      const executor = new ToolExecutor(registry, new MiddlewarePipeline());
+      const results = await executor.runBatch(calls, baseCtx());
+
+      expect(results).toHaveLength(3);
+      expect(results[0]!.call.id).toBe("tc_1");
+      expect(results[1]!.call.id).toBe("tc_2");
+      expect(results[2]!.call.id).toBe("tc_3");
+    });
+
+    it("returns empty array for empty calls", async () => {
+      const executor = new ToolExecutor(new InMemoryToolRegistry(), new MiddlewarePipeline());
+      const results = await executor.runBatch([], baseCtx());
+      expect(results).toHaveLength(0);
+    });
+
+    it("throws for unknown tool in batch", async () => {
+      const registry = new InMemoryToolRegistry();
+      const executor = new ToolExecutor(registry, new MiddlewarePipeline());
+
+      const calls: ToolCall[] = [{ id: "tc_1", name: "nonexistent", input: {} }];
+      await expect(executor.runBatch(calls, baseCtx())).rejects.toThrow(
+        "Tool not found: nonexistent",
+      );
+    });
   });
 });

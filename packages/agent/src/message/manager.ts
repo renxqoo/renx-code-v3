@@ -1,10 +1,11 @@
 import type { AgentMessage, ToolCall } from "@renx/model";
 
+import { generateId } from "../helpers";
 import type { AgentInput, AgentRunContext, AgentState } from "../types";
 
 import { applyMessagePatch } from "./reducer";
 import { patchToolPairs } from "./patch-tool-pairs";
-import type { MessageValidationResult, PatchToolPairsResult } from "./types";
+import type { MessageValidationResult, PatchToolPairsResult, RunMessage } from "./types";
 import { validateMessageSequence } from "./validator";
 
 /** Options for history windowing. */
@@ -20,7 +21,7 @@ export interface HistoryWindowOptions {
  * - Build effective messages for model consumption
  */
 export interface MessageManager {
-  normalizeIncoming(input: AgentInput): AgentMessage[];
+  normalizeIncoming(input: AgentInput): RunMessage[];
   appendUserMessage(state: AgentState, text: string): AgentState;
   appendAssistantMessage(state: AgentState, content: string): AgentState;
   appendAssistantToolCallMessage(
@@ -34,8 +35,8 @@ export interface MessageManager {
     toolCallId: string,
     content: string,
   ): AgentState;
-  validate(messages: AgentMessage[]): MessageValidationResult;
-  patchToolPairs(messages: AgentMessage[]): PatchToolPairsResult;
+  validate(messages: RunMessage[]): MessageValidationResult;
+  patchToolPairs(messages: RunMessage[]): PatchToolPairsResult;
   buildEffectiveMessages(ctx: AgentRunContext): AgentMessage[];
 }
 
@@ -48,7 +49,7 @@ export class DefaultMessageManager implements MessageManager {
     };
   }
 
-  normalizeIncoming(input: AgentInput): AgentMessage[] {
+  normalizeIncoming(input: AgentInput): RunMessage[] {
     if (input.messages?.length) {
       return input.messages.map((m) => this.normalizeMessage(m));
     }
@@ -76,11 +77,13 @@ export class DefaultMessageManager implements MessageManager {
     return applyMessagePatch(state, {
       appendMessages: [
         {
-          id: crypto.randomUUID(),
+          id: generateId(),
+          messageId: generateId("msg"),
           role: "assistant",
           content,
           createdAt: new Date().toISOString(),
           toolCalls,
+          source: "model",
         },
       ],
     });
@@ -95,22 +98,24 @@ export class DefaultMessageManager implements MessageManager {
     return applyMessagePatch(state, {
       appendMessages: [
         {
-          id: crypto.randomUUID(),
+          id: generateId(),
+          messageId: generateId("msg"),
           role: "tool",
           name: toolName,
           toolCallId,
           content,
           createdAt: new Date().toISOString(),
+          source: "tool",
         },
       ],
     });
   }
 
-  validate(messages: AgentMessage[]): MessageValidationResult {
+  validate(messages: RunMessage[]): MessageValidationResult {
     return validateMessageSequence(messages);
   }
 
-  patchToolPairs(messages: AgentMessage[]): PatchToolPairsResult {
+  patchToolPairs(messages: RunMessage[]): PatchToolPairsResult {
     return patchToolPairs(messages);
   }
 
@@ -122,9 +127,10 @@ export class DefaultMessageManager implements MessageManager {
    * 2. patchToolPairs — fix incomplete tool call/result pairs
    * 3. applyHistoryWindow — trim to recent messages
    * 4. injectMemoryMessages — prepend memory as system context
+   * 5. strip agent-only fields — remove `source` and `messageId` before sending to model
    */
   buildEffectiveMessages(ctx: AgentRunContext): AgentMessage[] {
-    let messages = [...ctx.state.messages];
+    let messages: RunMessage[] = [...ctx.state.messages];
 
     // Step 1: Validate
     const validation = this.validate(messages);
@@ -144,7 +150,8 @@ export class DefaultMessageManager implements MessageManager {
     // Step 4: Inject memory messages
     messages = this.injectMemoryMessages(messages, ctx.state.memory);
 
-    return messages;
+    // Step 5: Strip agent-only fields at the boundary
+    return messages.map(({ source: _, messageId: __, ...msg }) => msg);
   }
 
   // --- Pipeline steps ---
@@ -154,9 +161,9 @@ export class DefaultMessageManager implements MessageManager {
    * Older messages beyond the window are dropped.
    */
   protected applyHistoryWindow(
-    messages: AgentMessage[],
+    messages: RunMessage[],
     options: HistoryWindowOptions,
-  ): AgentMessage[] {
+  ): RunMessage[] {
     const max = options.maxRecentMessages ?? 30;
     if (messages.length <= max) return messages;
     return messages.slice(messages.length - max);
@@ -167,18 +174,20 @@ export class DefaultMessageManager implements MessageManager {
    * Memory messages are temporary — they do not pollute state.messages.
    */
   protected injectMemoryMessages(
-    messages: AgentMessage[],
+    messages: RunMessage[],
     memory: Record<string, unknown>,
-  ): AgentMessage[] {
+  ): RunMessage[] {
     const keys = Object.keys(memory);
     if (keys.length === 0) return messages;
 
     const memoryContent = JSON.stringify(memory, null, 2);
-    const memoryMessage: AgentMessage = {
-      id: "__memory_injection__",
+    const memoryMessage: RunMessage = {
+      id: generateId(),
+      messageId: generateId("msg"),
       role: "system",
       content: `[Agent Memory]\n${memoryContent}`,
       createdAt: new Date().toISOString(),
+      source: "memory",
     };
 
     return [memoryMessage, ...messages];
@@ -186,30 +195,36 @@ export class DefaultMessageManager implements MessageManager {
 
   // --- Private helpers ---
 
-  private normalizeMessage(message: AgentMessage): AgentMessage {
+  private normalizeMessage(message: RunMessage): RunMessage {
     return {
       ...message,
-      id: message.id || crypto.randomUUID(),
+      id: message.id || generateId(),
+      messageId: message.messageId || generateId("msg"),
       createdAt: message.createdAt || new Date().toISOString(),
       metadata: message.metadata ?? {},
+      source: message.source ?? "input",
     };
   }
 
-  private createUserMessage(text: string): AgentMessage {
+  private createUserMessage(text: string): RunMessage {
     return {
-      id: crypto.randomUUID(),
+      id: generateId(),
+      messageId: generateId("msg"),
       role: "user",
       content: text,
       createdAt: new Date().toISOString(),
+      source: "input",
     };
   }
 
-  private createAssistantMessage(text: string): AgentMessage {
+  private createAssistantMessage(text: string): RunMessage {
     return {
-      id: crypto.randomUUID(),
+      id: generateId(),
+      messageId: generateId("msg"),
       role: "assistant",
       content: text,
       createdAt: new Date().toISOString(),
+      source: "model",
     };
   }
 }

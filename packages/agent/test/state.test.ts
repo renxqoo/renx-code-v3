@@ -28,6 +28,7 @@ describe("applyStatePatch", () => {
   it("appends messages", () => {
     const msg = {
       id: "m1",
+      messageId: "m1",
       role: "user" as const,
       content: "hi",
       createdAt: "2026-01-01T00:00:00Z",
@@ -62,7 +63,13 @@ describe("applyStatePatch", () => {
   it("applies multiple patches at once", () => {
     const result = applyStatePatch(baseState, {
       appendMessages: [
-        { id: "m1", role: "user" as const, content: "hi", createdAt: "2026-01-01T00:00:00Z" },
+        {
+          id: "m1",
+          messageId: "m1",
+          role: "user" as const,
+          content: "hi",
+          createdAt: "2026-01-01T00:00:00Z",
+        },
       ],
       setStatus: "completed",
       mergeMemory: { foo: "bar" },

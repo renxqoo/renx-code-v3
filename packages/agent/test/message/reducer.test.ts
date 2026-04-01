@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { AgentMessage } from "@renx/model";
 
 import type { AgentState } from "../../src/types";
+import type { RunMessage } from "../../src/message/types";
 
 import { applyMessagePatch, appendMessages, replaceMessages } from "../../src/message/reducer";
 
-const msg = (id: string, role: AgentMessage["role"]): AgentMessage => ({
+const msg = (id: string, role: AgentMessage["role"]): RunMessage => ({
   id,
+  messageId: id,
   role,
   content: `${role} ${id}`,
   createdAt: "2026-01-01T00:00:00Z",

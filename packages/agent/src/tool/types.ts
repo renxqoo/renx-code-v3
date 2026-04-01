@@ -2,6 +2,10 @@ import type { Metadata, ToolCall } from "@renx/model";
 
 import type { AgentRunContext, AgentStatePatch } from "../types";
 
+// --- Validation Result ---
+
+export type ValidationResult = { result: true } | { result: false; message: string; code?: string };
+
 // --- Tool Result ---
 
 export interface ToolResult {
@@ -27,7 +31,11 @@ export interface AgentTool {
   description: string;
   inputSchema?: Record<string, unknown>;
   capabilities?: string[];
+  maxResultSizeChars?: number;
   invoke(input: unknown, ctx: ToolContext): Promise<ToolResult>;
+  isConcurrencySafe?(input: unknown): boolean;
+  isReadOnly?(input: unknown): boolean;
+  validateInput?(input: unknown, ctx: ToolContext): Promise<ValidationResult> | ValidationResult;
 }
 
 // --- Execution Result ---
