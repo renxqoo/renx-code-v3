@@ -24,6 +24,35 @@ export interface RunMessage extends AgentMessage {
   /** Agent-controlled unique identifier. Used for internal logic (dedup, indexing). */
   messageId: string;
   source?: MessageSource;
+  /**
+   * API round index where this message is produced.
+   * Helps keep compression operations aligned with request/response boundaries.
+   */
+  roundIndex?: number;
+  /**
+   * Atomic grouping id for preserving protocol-safe segments.
+   * Messages in the same atomic group should be trimmed/kept together.
+   */
+  atomicGroupId?: string;
+  /**
+   * Logical group id for assistant thinking/text chunks that must stay together.
+   */
+  thinkingChunkGroupId?: string;
+  /**
+   * Marks compact boundary messages inserted by context compaction.
+   */
+  compactBoundary?: {
+    boundaryId: string;
+    strategy: "session_memory" | "auto_compact" | "reactive_compact";
+    createdAt: string;
+  };
+  /**
+   * If present, this message preserves a compacted segment reference.
+   */
+  preservedSegmentRef?: {
+    segmentId: string;
+    digest: string;
+  };
 }
 
 export interface MessageValidationIssue {

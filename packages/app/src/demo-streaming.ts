@@ -12,35 +12,52 @@
  */
 
 import { createModelClient, createOpenRouterProvider } from "@renx/provider";
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+import { z } from "zod";
 import {
   EnterpriseAgentBase,
   InMemoryCheckpointStore,
   type AgentMiddleware,
+  type AgentInput,
+  type AgentResult,
   type AgentRunContext,
   type AgentTool,
   type AgentStreamEvent,
   type PolicyEngine,
   type ToolResult,
-  type ToolContext,
-  type ValidationResult,
   type AuditEvent,
   type AuditLogger,
 } from "@renx/agent";
+
+let CLI_VERBOSE = false;
 
 // ============================================================
 // 工具定义 — 8 个丰富工具
 // ============================================================
 
+const weatherInputSchema = z.object({ city: z.string().trim().min(1) });
+const exchangeRateInputSchema = z.object({
+  from: z.string().trim().min(1),
+  to: z.string().trim().min(1),
+});
+const stockInputSchema = z.object({ symbol: z.string().trim().min(1) });
+const calculatorInputSchema = z.object({ expression: z.string().trim().min(1) });
+const translateInputSchema = z.object({
+  text: z.string().trim().min(1),
+  targetLang: z.enum(["en", "zh", "ja", "ko", "fr", "de"]),
+});
+const newsInputSchema = z.object({
+  topic: z.string().trim().min(1),
+  count: z.number().int().min(1).max(10).optional(),
+});
+const timezoneInputSchema = z.object({ city: z.string().trim().min(1) });
+const wikiInputSchema = z.object({ query: z.string().trim().min(1) });
+
 const getWeatherTool: AgentTool = {
   name: "get_weather",
   description: "获取指定城市的天气信息，包括温度、天气状况、湿度、风速",
-  inputSchema: {
-    type: "object",
-    properties: {
-      city: { type: "string", description: "城市名称" },
-    },
-    required: ["city"],
-  },
+  schema: weatherInputSchema,
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   invoke: async (input: unknown): Promise<ToolResult> => {
@@ -65,14 +82,7 @@ const getWeatherTool: AgentTool = {
 const getExchangeRateTool: AgentTool = {
   name: "get_exchange_rate",
   description: "获取实时汇率信息，支持主流货币对",
-  inputSchema: {
-    type: "object",
-    properties: {
-      from: { type: "string", description: "源货币代码，如 CNY、USD" },
-      to: { type: "string", description: "目标货币代码，如 USD、EUR" },
-    },
-    required: ["from", "to"],
-  },
+  schema: exchangeRateInputSchema,
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   invoke: async (input: unknown): Promise<ToolResult> => {
@@ -98,13 +108,7 @@ const getExchangeRateTool: AgentTool = {
 const getStockPriceTool: AgentTool = {
   name: "get_stock_price",
   description: "获取股票实时价格信息",
-  inputSchema: {
-    type: "object",
-    properties: {
-      symbol: { type: "string", description: "股票代码，如 AAPL、GOOGL、600519" },
-    },
-    required: ["symbol"],
-  },
+  schema: stockInputSchema,
   invoke: async (input: unknown): Promise<ToolResult> => {
     const { symbol } = input as { symbol: string };
     const stocks: Record<string, { name: string; price: string; change: string }> = {
@@ -131,13 +135,7 @@ const getStockPriceTool: AgentTool = {
 const calculatorTool: AgentTool = {
   name: "calculator",
   description: "数学计算器，支持加减乘除、括号运算",
-  inputSchema: {
-    type: "object",
-    properties: {
-      expression: { type: "string", description: "数学表达式，如 '(100 + 200) * 0.85'" },
-    },
-    required: ["expression"],
-  },
+  schema: calculatorInputSchema,
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   invoke: async (input: unknown): Promise<ToolResult> => {
@@ -157,31 +155,9 @@ const calculatorTool: AgentTool = {
 const translateTool: AgentTool = {
   name: "translate",
   description: "文本翻译工具，支持多语言互译",
-  inputSchema: {
-    type: "object",
-    properties: {
-      text: { type: "string", description: "要翻译的文本" },
-      targetLang: { type: "string", description: "目标语言: en, zh, ja, ko, fr, de" },
-    },
-    required: ["text", "targetLang"],
-  },
+  schema: translateInputSchema,
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
-  validateInput(input: unknown, _ctx: ToolContext): ValidationResult {
-    const { text, targetLang } = input as { text?: string; targetLang?: string };
-    if (!text || text.trim().length === 0) {
-      return { result: false, message: "text 不能为空", code: "EMPTY_TEXT" };
-    }
-    const supported = ["en", "zh", "ja", "ko", "fr", "de"];
-    if (!targetLang || !supported.includes(targetLang)) {
-      return {
-        result: false,
-        message: `targetLang 必须是: ${supported.join(", ")}`,
-        code: "UNSUPPORTED_LANG",
-      };
-    }
-    return { result: true };
-  },
   invoke: async (input: unknown): Promise<ToolResult> => {
     const { text, targetLang } = input as { text: string; targetLang: string };
     const dict: Record<string, Record<string, string>> = {
@@ -206,14 +182,7 @@ const translateTool: AgentTool = {
 const getNewsTool: AgentTool = {
   name: "get_news",
   description: "获取指定主题的最新新闻摘要",
-  inputSchema: {
-    type: "object",
-    properties: {
-      topic: { type: "string", description: "新闻主题，如 tech, finance, sports" },
-      count: { type: "number", description: "获取条数，默认 3" },
-    },
-    required: ["topic"],
-  },
+  schema: newsInputSchema,
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   invoke: async (input: unknown): Promise<ToolResult> => {
@@ -251,13 +220,7 @@ const getNewsTool: AgentTool = {
 const getTimezoneTool: AgentTool = {
   name: "get_timezone",
   description: "获取指定城市的当前时间和时区信息",
-  inputSchema: {
-    type: "object",
-    properties: {
-      city: { type: "string", description: "城市名称" },
-    },
-    required: ["city"],
-  },
+  schema: timezoneInputSchema,
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   invoke: async (input: unknown): Promise<ToolResult> => {
@@ -283,13 +246,7 @@ const getTimezoneTool: AgentTool = {
 const getWikiTool: AgentTool = {
   name: "get_wiki",
   description: "获取百科知识摘要",
-  inputSchema: {
-    type: "object",
-    properties: {
-      query: { type: "string", description: "查询关键词" },
-    },
-    required: ["query"],
-  },
+  schema: wikiInputSchema,
   isConcurrencySafe: () => true,
   isReadOnly: () => true,
   invoke: async (input: unknown): Promise<ToolResult> => {
@@ -380,15 +337,18 @@ const timingMiddleware: AgentMiddleware = {
     return req;
   },
   afterModel(ctx, resp) {
+    if (!CLI_VERBOSE) return resp;
     const elapsed = Date.now() - ((ctx.state.scratchpad["_stepStartTime"] as number) || Date.now());
     console.log(`    ⏱  [MW:timing] 模型调用耗时 ${elapsed}ms, 响应类型=${resp.type}`);
     return resp;
   },
   afterTool(ctx, result) {
+    if (!CLI_VERBOSE) return;
     const elapsed = Date.now() - ((ctx.state.scratchpad["_stepStartTime"] as number) || Date.now());
     console.log(`    ⏱  [MW:timing] 工具 ${result.tool.name} 完成，累计耗时 ${elapsed}ms`);
   },
   afterRun(ctx, result) {
+    if (!CLI_VERBOSE) return;
     const totalSteps = result.state.stepCount;
     const msgCount = result.state.messages.length;
     console.log(
@@ -400,6 +360,7 @@ const timingMiddleware: AgentMiddleware = {
 const sensitiveRedactMiddleware: AgentMiddleware = {
   name: "sensitive-redact",
   beforeModel(_ctx, req) {
+    if (!CLI_VERBOSE) return req;
     // 演示：记录请求中的消息数量
     console.log(`    🔒 [MW:redact] 检查 ${req.messages.length} 条消息，未发现敏感信息`);
     return req;
@@ -409,6 +370,7 @@ const sensitiveRedactMiddleware: AgentMiddleware = {
 const retryAdviceMiddleware: AgentMiddleware = {
   name: "retry-advice",
   onError(ctx, error) {
+    if (!CLI_VERBOSE) return;
     console.log(`    🔄 [MW:retry] 错误 ${error.code}: ${error.message}`);
     if (error.retryable) {
       console.log(`    🔄 [MW:retry] 建议重试 (retryable=true)`);
@@ -429,15 +391,17 @@ class DynamicPolicy implements PolicyEngine {
 
   filterTools(_ctx: AgentRunContext, tools: AgentTool[]): AgentTool[] {
     const filtered = tools.filter((t) => this.allowed.has(t.name));
-    console.log(
-      `    🛡  [Policy] 工具过滤: ${tools.length} → ${filtered.length} (白名单: ${[...this.allowed].join(", ")})`,
-    );
+    if (CLI_VERBOSE) {
+      console.log(
+        `    🛡  [Policy] 工具过滤: ${tools.length} → ${filtered.length} (白名单: ${[...this.allowed].join(", ")})`,
+      );
+    }
     return filtered;
   }
 
   canUseTool(_ctx: AgentRunContext, tool: AgentTool, _input: unknown): boolean {
     const allowed = this.allowed.has(tool.name);
-    if (!allowed) {
+    if (!allowed && CLI_VERBOSE) {
       console.log(`    🛡  [Policy] 拒绝工具 ${tool.name}（不在白名单中）`);
     }
     return allowed;
@@ -450,6 +414,7 @@ class DynamicPolicy implements PolicyEngine {
 
 class RichAuditLogger implements AuditLogger {
   log(event: AuditEvent): void {
+    if (!CLI_VERBOSE) return;
     const emoji: Record<string, string> = {
       run_started: "🚀",
       model_called: "🤖",
@@ -495,15 +460,7 @@ class LifeAssistantAgent extends EnterpriseAgentBase {
     return "life-assistant";
   }
   protected getSystemPrompt(_ctx: AgentRunContext) {
-    return `你是一个全能生活助手，拥有以下工具：
-- get_weather: 查询天气
-- get_exchange_rate: 查询汇率
-- get_stock_price: 查询股价
-- calculator: 数学计算
-- translate: 翻译
-- get_news: 获取新闻
-- get_timezone: 查询时区时间
-- get_wiki: 百科知识
+    return `你是一个全能生活助手
 
 请根据用户问题，灵活组合调用多个工具来提供全面、详细的回答。
 回答要有条理，使用适当的格式（列表、表格等）让信息清晰易读。
@@ -554,6 +511,26 @@ function getEventIcon(type: AgentStreamEvent["type"]): string {
 }
 
 function printEvent(event: AgentStreamEvent, idx: number): void {
+  if (!CLI_VERBOSE) {
+    switch (event.type) {
+      case "assistant_delta":
+        process.stdout.write(event.text);
+        break;
+      case "tool_call":
+        console.log(`\n🔧 调用工具 ${event.call.name}(${JSON.stringify(event.call.input)})`);
+        break;
+      case "tool_result":
+        console.log(`📦 工具返回 ${event.result.content}`);
+        break;
+      case "run_failed":
+        console.log(`\n💥 运行失败：${event.error.code} - ${event.error.message}`);
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+
   const icon = getEventIcon(event.type);
   const tag = `[Event #${String(idx).padStart(2, "0")}]`;
 
@@ -572,10 +549,6 @@ function printEvent(event: AgentStreamEvent, idx: number): void {
       process.stdout.write(event.text);
       break;
     }
-
-    case "tool_call_delta":
-      // 工具调用增量，静默忽略（太碎片化）
-      break;
 
     case "tool_call":
       console.log(
@@ -609,19 +582,132 @@ function printEvent(event: AgentStreamEvent, idx: number): void {
 // 主函数
 // ============================================================
 
+interface CliOptions {
+  prompt?: string;
+  verbose: boolean;
+  showHelp: boolean;
+}
+
+function parseCliOptions(args: string[]): CliOptions {
+  const options: CliOptions = { verbose: false, showHelp: false };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--help" || arg === "-h") {
+      options.showHelp = true;
+      continue;
+    }
+    if (arg === "--verbose" || arg === "-v") {
+      options.verbose = true;
+      continue;
+    }
+    if (arg === "--prompt" || arg === "-p") {
+      const value = args[i + 1];
+      if (!value) {
+        throw new Error("参数 --prompt 需要一个内容值");
+      }
+      options.prompt = value;
+      i++;
+      continue;
+    }
+  }
+  return options;
+}
+
+function printUsage() {
+  console.log("用法:");
+  console.log('  pnpm --filter @renx/app demo:streaming [--prompt "问题"] [--verbose]');
+  console.log("");
+  console.log("参数:");
+  console.log("  -p, --prompt   单次执行模式，执行后退出");
+  console.log("  -v, --verbose  显示完整事件与中间件日志");
+  console.log("  -h, --help     显示帮助");
+  console.log("");
+  console.log("交互命令:");
+  console.log("  /help   查看命令帮助");
+  console.log("  /clear  清空会话上下文");
+  console.log("  /exit   退出");
+}
+
+function printCliBanner() {
+  console.log("");
+  console.log("╔══════════════════════════════════════════════════════════════╗");
+  console.log("║                @renx/agent Streaming CLI                    ║");
+  console.log("║              输入问题即可流式执行 Agent                     ║");
+  console.log("╚══════════════════════════════════════════════════════════════╝");
+  console.log("");
+}
+
+async function runOnce(
+  agent: LifeAssistantAgent,
+  prompt: string,
+  conversationMessages: AgentInput["messages"],
+): Promise<AgentResult> {
+  let eventCount = 0;
+  const stream = agent.stream(
+    conversationMessages
+      ? { inputText: prompt, messages: conversationMessages }
+      : { inputText: prompt },
+  );
+
+  while (true) {
+    const step = await stream.next();
+    if (step.done) {
+      return step.value;
+    }
+    eventCount++;
+    printEvent(step.value, eventCount);
+  }
+}
+
+async function runInteractive(agent: LifeAssistantAgent) {
+  const rl = createInterface({ input, output });
+  let conversationMessages: AgentInput["messages"] = [];
+
+  console.log("输入 /help 查看命令，输入 /exit 退出。\n");
+
+  while (true) {
+    const answer = (await rl.question("> ")).trim();
+    if (!answer) continue;
+
+    if (answer === "/exit" || answer === "exit" || answer === "quit") {
+      break;
+    }
+    if (answer === "/help") {
+      printUsage();
+      console.log("");
+      continue;
+    }
+    if (answer === "/clear") {
+      conversationMessages = [];
+      console.log("会话上下文已清空。\n");
+      continue;
+    }
+
+    console.log("AI> ");
+    const result = await runOnce(agent, answer, conversationMessages);
+    if (result.status === "completed") {
+      conversationMessages = result.state.messages;
+    }
+    console.log("\n");
+  }
+
+  rl.close();
+}
+
 async function main() {
+  const options = parseCliOptions(process.argv.slice(2));
+  if (options.showHelp) {
+    printUsage();
+    return;
+  }
+
   const apiKey = process.env["OPENROUTER_API_KEY"];
   if (!apiKey) {
     console.error("❌ 请设置环境变量 OPENROUTER_API_KEY");
     process.exit(1);
   }
-
-  console.log("");
-  console.log("  ╔══════════════════════════════════════════════════════════════╗");
-  console.log("  ║           🌊 @renx/agent 流式输出专项 Demo                 ║");
-  console.log("  ║     全能生活助手 — 丰富的多工具流式交互                     ║");
-  console.log("  ╚══════════════════════════════════════════════════════════════╝");
-  console.log("");
+  CLI_VERBOSE = options.verbose;
+  printCliBanner();
 
   const modelClient = createModelClient({
     providers: [createOpenRouterProvider({ apiKey, timeoutMs: 120_000 })],
@@ -629,28 +715,15 @@ async function main() {
   });
 
   const agent = new LifeAssistantAgent(modelClient);
-
-  // ---- 复合任务：一个 prompt 触发多步多工具流式调用 ----
-  const prompt = [" 查一下人民币兑日元汇率"].join("\n");
-
-  console.log("  📨 用户输入:");
-  console.log("  ┌──────────────────────────────────────────────────────────┐");
-  prompt.split("\n").forEach((line) => {
-    console.log(`  │ ${line.padEnd(57)}│`);
-  });
-  console.log("  └──────────────────────────────────────────────────────────┘");
-  console.log("");
-  console.log("  🌊 开始流式输出…\n");
-
-  // ---- 收集统计 ----
-  let eventCount = 0;
-
-  const stream = agent.stream({ inputText: prompt });
-
-  for await (const event of stream) {
-    eventCount++;
-    printEvent(event, eventCount);
+  if (options.prompt) {
+    console.log(`你> ${options.prompt}`);
+    console.log("助手> ");
+    await runOnce(agent, options.prompt, []);
+    console.log("\n");
+    return;
   }
+
+  await runInteractive(agent);
 }
 
 main().catch((err: unknown) => {

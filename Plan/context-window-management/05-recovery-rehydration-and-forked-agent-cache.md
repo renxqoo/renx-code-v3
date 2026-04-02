@@ -11,6 +11,16 @@
 - 连续失败熔断
 - forked agent cache prefix 复用
 
+## 1.1 与“Stage 0 + 五层压缩”口径的关系
+
+本文件覆盖的是“压缩后的恢复系统”，不是新的压缩层。统一口径如下：
+
+- Stage 0（前置预算门禁）：Tool Result Budget
+- Layer 1-5（主动压缩路径）：History Snip、Microcompact、Context Collapse、Session Memory Compact、Auto Compact
+- 本文档主题（恢复路径）：Reactive Compact、PTL 重试、Rehydration、Cleanup、Circuit Breaker
+
+其中 `Reactive Compact` 属于错误恢复分支，不计入五层主动压缩。
+
 ## 2. Reactive Compact
 
 ### 2.1 触发条件
@@ -31,7 +41,7 @@
 2. 分类错误类型
 3. 若为 PTL / media-too-large，先尝试清空或排空 collapse 视图
 4. 重新投影 API view
-5. 进入 reactive compact
+5. 进入 reactive compact（恢复分支，不属于五层主动压缩）
 6. 成功后写入 boundary、rehydration、cleanup
 7. 以当前 step 重试模型调用
 8. 超过重试上限则失败退出
@@ -47,6 +57,8 @@ interface RecoveryConfig {
   maxOutputTokensRecoveryLimit: number;
   maxReactiveCompactAttempts: number;
   maxConsecutiveAutocompactFailures: number;
+  maxCompactStreamingRetries: number; // 压缩请求 streaming 中断后最大重试次数，源码 MAX_COMPACT_STREAMING_RETRIES = 2
+  maxOutputTokensForSummary: number; // 摘要请求最大输出 token，源码 MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 }
 ```
 
@@ -123,6 +135,7 @@ interface CompactRetryResult {
 - MCP 服务器说明或工具提示
 - deferred tools delta
 - agent listing delta
+- async agent attachments（与 Claude Code 源码 `createAsyncAgentAttachmentsIfNeeded()` 对齐，用于恢复异步子 agent 的上下文附件）
 
 ### 5.3 推荐接口
 
@@ -135,6 +148,7 @@ interface RehydrationPackage {
   mcpMessages: RunMessage[];
   deferredToolMessages: RunMessage[];
   agentListingMessages: RunMessage[];
+  asyncAgentAttachmentMessages: RunMessage[];
 }
 ```
 
@@ -165,7 +179,7 @@ interface RehydrationPackage {
 4. plan / mode instructions
 5. skills
 6. hooks
-7. deferred tools / agent listing / MCP deltas
+7. deferred tools / agent listing / MCP deltas / async agent attachments
 8. preserved tail
 
 这样既能保持压缩逻辑连贯，也能把恢复消息控制在可预测顺序中。
@@ -297,3 +311,4 @@ interface ContextRecoveryOrchestrator {
 - cleanup 后不会出现旧投影或旧缓存再次污染新请求。
 - 连续压缩失败到达上限后系统能及时熔断。
 - 摘要请求优先走 forked agent cache 复用路径。
+- 能清晰区分“主动压缩路径（Stage 0 + Layer 1-5）”与“错误恢复路径（Reactive Compact）”。

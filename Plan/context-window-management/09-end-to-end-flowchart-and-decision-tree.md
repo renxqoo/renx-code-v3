@@ -13,6 +13,19 @@
 
 目标是让实现者可以直接拿这份文档做开发顺序、联调脚本、排错路径和 code review 依据。
 
+## 1.1 层级口径说明
+
+本文档图例统一采用“Stage 0 + 五层压缩”：
+
+- Stage 0：Tool Result Budget（前置预算门禁）
+- Layer 1：History Snip
+- Layer 2：Microcompact
+- Layer 3：Context Collapse
+- Layer 4：Session Memory Compact
+- Layer 5：Auto Compact
+
+`Reactive Compact` 属于错误恢复分支，不属于五层主动压缩。
+
 ## 2. 主流程总图
 
 ```mermaid
@@ -22,10 +35,10 @@ flowchart TD
     C --> D["Filter allowed tools and build tool definitions"]
     D --> E["Project API view from canonical history"]
     E --> F["Locate latest compact boundary"]
-    F --> G["Apply tool result budget projection"]
-    G --> H["Apply history snip"]
-    H --> I["Apply microcompact"]
-    I --> J["Apply context collapse projection"]
+    F --> G["Apply Stage 0: tool result budget projection"]
+    G --> H["Apply Layer 1: history snip"]
+    H --> I["Apply Layer 2: microcompact"]
+    I --> J["Apply Layer 3: context collapse projection"]
     J --> K["Measure context tokens"]
     K --> L{"Has latest usage/iteration stats?"}
     L -- Yes --> M["Use usage + delta estimation"]
@@ -42,9 +55,9 @@ flowchart TD
 
     T --> U["Re-project latest visible message segment"]
     U --> V["Apply lightweight layers again for compaction input"]
-    V --> W{"Session memory compact available?"}
-    W -- Yes --> X["Run session memory compact"]
-    W -- No --> Y["Run auto compact summary path"]
+    V --> W{"Layer 4 session memory compact available?"}
+    W -- Yes --> X["Run Layer 4: session memory compact"]
+    W -- No --> Y["Run Layer 5: auto compact summary path"]
 
     X --> AA["Create summary + compact boundary + preserved tail"]
     Y --> AB["Strip media for compact request"]
@@ -341,16 +354,16 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["Enter compaction orchestrator"] --> B["Rebuild latest visible segment after boundary"]
-    B --> C["Apply tool result budget"]
-    C --> D["Apply history snip"]
-    D --> E["Apply microcompact"]
-    E --> F["Apply context collapse"]
+    B --> C["Apply Stage 0: tool result budget"]
+    C --> D["Apply Layer 1: history snip"]
+    D --> E["Apply Layer 2: microcompact"]
+    E --> F["Apply Layer 3: context collapse"]
     F --> G["Measure compact candidate size"]
     G --> H{"Within safe range already?"}
     H -- Yes --> I["Skip heavy compact and return projected view"]
-    H -- No --> J{"Session memory compact available?"}
-    J -- Yes --> K["Use session memory as summary source"]
-    J -- No --> L["Build auto compact request"]
+    H -- No --> J{"Layer 4 session memory compact available?"}
+    J -- Yes --> K["Use Layer 4 session memory as summary source"]
+    J -- No --> L["Build Layer 5 auto compact request"]
     K --> M["Create summary message"]
     L --> N["Strip images/documents"]
     N --> O["Build NO_TOOLS structured prompt"]
@@ -371,7 +384,7 @@ flowchart TD
 
 ### 6.1 为什么轻量层要再执行一次
 
-在进入 compaction orchestrator 后，仍然要先跑 tool result budget、history snip、microcompact、collapse，而不是直接调用摘要模型。原因是：
+在进入 compaction orchestrator 后，仍然要先跑 Stage 0 + Layer 1-3（tool result budget、history snip、microcompact、collapse），而不是直接调用摘要模型。原因是：
 
 - 这些层可能已经足够把请求拉回安全区。
 - 它们成本更低、信息损失更小。

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { DefaultBackendResolver } from "../../src/tool/default-backend-resolver";
 import type { AgentTool, ExecutionBackend, ToolResult } from "../../src/tool/types";
@@ -21,6 +22,7 @@ describe("DefaultBackendResolver", () => {
     const tool: AgentTool = {
       name: "shell",
       description: "Runs shell commands",
+      schema: z.object({}).passthrough(),
       capabilities: ["requires-exec"],
       invoke: async (): Promise<ToolResult> => ({ content: "ok" }),
     };
@@ -37,6 +39,7 @@ describe("DefaultBackendResolver", () => {
     const tool: AgentTool = {
       name: "read-file",
       description: "Reads files",
+      schema: z.object({}).passthrough(),
       capabilities: ["requires-filesystem-read"],
       invoke: async (): Promise<ToolResult> => ({ content: "ok" }),
     };
@@ -53,6 +56,7 @@ describe("DefaultBackendResolver", () => {
     const tool: AgentTool = {
       name: "write-file",
       description: "Writes files",
+      schema: z.object({}).passthrough(),
       capabilities: ["requires-filesystem-write"],
       invoke: async (): Promise<ToolResult> => ({ content: "ok" }),
     };
@@ -69,6 +73,7 @@ describe("DefaultBackendResolver", () => {
     const tool: AgentTool = {
       name: "echo",
       description: "Echoes input",
+      schema: z.object({}).passthrough(),
       invoke: async (): Promise<ToolResult> => ({ content: "ok" }),
     };
 

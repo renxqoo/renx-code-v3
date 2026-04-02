@@ -8,9 +8,11 @@ export const applyStatePatch = (state: AgentState, patch?: AgentStatePatch): Age
 
   return {
     ...state,
+    ...(patch.replaceMessages ? { messages: patch.replaceMessages } : {}),
     ...(patch.appendMessages ? { messages: [...state.messages, ...patch.appendMessages] } : {}),
     ...(patch.setScratchpad ? { scratchpad: { ...state.scratchpad, ...patch.setScratchpad } } : {}),
     ...(patch.mergeMemory ? { memory: { ...state.memory, ...patch.mergeMemory } } : {}),
+    ...(patch.setContext ? { context: patch.setContext } : {}),
     ...(patch.setStatus ? { status: patch.setStatus } : {}),
     ...(patch.setError ? { error: patch.setError } : {}),
   };

@@ -23,17 +23,23 @@ export interface HistoryWindowOptions {
 export interface MessageManager {
   normalizeIncoming(input: AgentInput): RunMessage[];
   appendUserMessage(state: AgentState, text: string): AgentState;
-  appendAssistantMessage(state: AgentState, content: string): AgentState;
+  appendAssistantMessage(state: AgentState, content: string, roundIndex?: number): AgentState;
   appendAssistantToolCallMessage(
     state: AgentState,
     content: string,
     toolCalls: ToolCall[],
+    roundIndex?: number,
+    atomicGroupId?: string,
+    thinkingChunkGroupId?: string,
   ): AgentState;
   appendToolResultMessage(
     state: AgentState,
     toolName: string,
     toolCallId: string,
     content: string,
+    roundIndex?: number,
+    atomicGroupId?: string,
+    thinkingChunkGroupId?: string,
   ): AgentState;
   validate(messages: RunMessage[]): MessageValidationResult;
   patchToolPairs(messages: RunMessage[]): PatchToolPairsResult;
@@ -45,7 +51,7 @@ export class DefaultMessageManager implements MessageManager {
 
   constructor(options?: HistoryWindowOptions) {
     this.historyWindowOptions = {
-      maxRecentMessages: options?.maxRecentMessages ?? 30,
+      maxRecentMessages: options?.maxRecentMessages ?? Number.MAX_SAFE_INTEGER,
     };
   }
 
@@ -65,14 +71,19 @@ export class DefaultMessageManager implements MessageManager {
     return applyMessagePatch(state, { appendMessages: [this.createUserMessage(text)] });
   }
 
-  appendAssistantMessage(state: AgentState, content: string): AgentState {
-    return applyMessagePatch(state, { appendMessages: [this.createAssistantMessage(content)] });
+  appendAssistantMessage(state: AgentState, content: string, roundIndex?: number): AgentState {
+    return applyMessagePatch(state, {
+      appendMessages: [this.createAssistantMessage(content, roundIndex)],
+    });
   }
 
   appendAssistantToolCallMessage(
     state: AgentState,
     content: string,
     toolCalls: ToolCall[],
+    roundIndex?: number,
+    atomicGroupId?: string,
+    thinkingChunkGroupId?: string,
   ): AgentState {
     return applyMessagePatch(state, {
       appendMessages: [
@@ -83,6 +94,9 @@ export class DefaultMessageManager implements MessageManager {
           content,
           createdAt: new Date().toISOString(),
           toolCalls,
+          ...(roundIndex !== undefined ? { roundIndex } : {}),
+          ...(atomicGroupId ? { atomicGroupId } : {}),
+          ...(thinkingChunkGroupId ? { thinkingChunkGroupId } : {}),
           source: "model",
         },
       ],
@@ -94,6 +108,9 @@ export class DefaultMessageManager implements MessageManager {
     toolName: string,
     toolCallId: string,
     content: string,
+    roundIndex?: number,
+    atomicGroupId?: string,
+    thinkingChunkGroupId?: string,
   ): AgentState {
     return applyMessagePatch(state, {
       appendMessages: [
@@ -105,6 +122,9 @@ export class DefaultMessageManager implements MessageManager {
           toolCallId,
           content,
           createdAt: new Date().toISOString(),
+          ...(roundIndex !== undefined ? { roundIndex } : {}),
+          ...(atomicGroupId ? { atomicGroupId } : {}),
+          ...(thinkingChunkGroupId ? { thinkingChunkGroupId } : {}),
           source: "tool",
         },
       ],
@@ -164,7 +184,8 @@ export class DefaultMessageManager implements MessageManager {
     messages: RunMessage[],
     options: HistoryWindowOptions,
   ): RunMessage[] {
-    const max = options.maxRecentMessages ?? 30;
+    const max = options.maxRecentMessages ?? Number.MAX_SAFE_INTEGER;
+    if (max <= 0) return messages;
     if (messages.length <= max) return messages;
     return messages.slice(messages.length - max);
   }
@@ -217,13 +238,14 @@ export class DefaultMessageManager implements MessageManager {
     };
   }
 
-  private createAssistantMessage(text: string): RunMessage {
+  private createAssistantMessage(text: string, roundIndex?: number): RunMessage {
     return {
       id: generateId(),
       messageId: generateId("msg"),
       role: "assistant",
       content: text,
       createdAt: new Date().toISOString(),
+      ...(roundIndex !== undefined ? { roundIndex } : {}),
       source: "model",
     };
   }

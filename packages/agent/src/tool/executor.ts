@@ -1,9 +1,12 @@
 import type { ToolCall } from "@renx/model";
 
 import { AgentError } from "../errors";
+import { generateId } from "../helpers";
 import type { AgentRunContext, AgentStatePatch } from "../types";
+import type { AuditLogger, AuditEventType } from "../types";
 
 import type { AgentTool, BackendResolver, ToolExecutionResult, ToolRegistry } from "./types";
+import { validateToolInput } from "./input-validation";
 
 import type { AggregatedDecision, MiddlewarePipeline } from "../middleware/pipeline";
 
@@ -24,11 +27,25 @@ export interface BatchToolResult {
  * Does NOT mutate ctx — all state patches are returned for the caller to apply.
  */
 export class ToolExecutor {
+  private readonly toolMaxRetries: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly retryMaxDelayMs: number;
+
   constructor(
     private readonly registry: ToolRegistry,
     private readonly middleware: MiddlewarePipeline,
     private readonly backendResolver?: BackendResolver,
-  ) {}
+    private readonly audit?: AuditLogger,
+    retryConfig?: {
+      toolMaxRetries?: number;
+      retryBaseDelayMs?: number;
+      retryMaxDelayMs?: number;
+    },
+  ) {
+    this.toolMaxRetries = Math.max(0, retryConfig?.toolMaxRetries ?? 1);
+    this.retryBaseDelayMs = Math.max(0, retryConfig?.retryBaseDelayMs ?? 50);
+    this.retryMaxDelayMs = Math.max(0, retryConfig?.retryMaxDelayMs ?? 500);
+  }
 
   async run(call: ToolCall, ctx: AgentRunContext): Promise<ToolExecutorRunResult> {
     const tool = this.registry.get(call.name);
@@ -59,31 +76,63 @@ export class ToolExecutor {
       ? await this.backendResolver.resolve(ctx, tool, call)
       : undefined;
 
-    // Invoke the tool
-    const toolResult = await tool.invoke(call.input, {
-      runContext: ctx,
-      toolCall: call,
-      backend,
-    });
+    let attempts = 0;
+    while (true) {
+      try {
+        // Invoke the tool
+        const toolCtx = {
+          runContext: ctx,
+          toolCall: call,
+          backend,
+        };
+        const validatedInput = validateToolInput(tool, call.input, toolCtx);
+        const toolResult = await tool.invoke(validatedInput, toolCtx);
 
-    const executionResult: ToolExecutionResult = {
-      tool,
-      call,
-      output: toolResult,
-    };
+        const executionResult: ToolExecutionResult = {
+          tool,
+          call,
+          output: toolResult,
+        };
 
-    // Run afterTool middleware
-    const afterDecision = await this.middleware.runAfterTool(ctx, executionResult);
+        // Run afterTool middleware
+        const afterDecision = await this.middleware.runAfterTool(ctx, executionResult);
 
-    // Collect all state patches (before + after middleware)
-    const statePatches = [...beforeDecision.statePatch, ...afterDecision.statePatch];
+        // Collect all state patches (before + after middleware)
+        const statePatches = [...beforeDecision.statePatch, ...afterDecision.statePatch];
 
-    return {
-      type: "completed",
-      result: executionResult,
-      shouldStop: afterDecision.shouldStop,
-      statePatches,
-    };
+        return {
+          type: "completed",
+          result: executionResult,
+          shouldStop: afterDecision.shouldStop,
+          statePatches,
+        };
+      } catch (error) {
+        const toolError =
+          error instanceof AgentError
+            ? error
+            : new AgentError({
+                code: "TOOL_ERROR",
+                message: error instanceof Error ? error.message : "Tool execution failed",
+                cause: error,
+                metadata: { toolName: call.name, toolCallId: call.id },
+              });
+
+        await this.middleware.runOnError(ctx, toolError);
+        const shouldRetry = this.shouldRetryError(toolError) && attempts < this.toolMaxRetries;
+        if (shouldRetry) {
+          attempts += 1;
+          await sleep(computeBackoffMs(attempts, this.retryBaseDelayMs, this.retryMaxDelayMs));
+          continue;
+        }
+        this.emitAudit(ctx, "tool_failed", {
+          toolName: call.name,
+          toolCallId: call.id,
+          code: toolError.code,
+          message: toolError.message,
+        });
+        throw toolError;
+      }
+    }
   }
 
   /**
@@ -131,20 +180,52 @@ export class ToolExecutor {
       ? await this.backendResolver.resolve(ctx, tool, call)
       : undefined;
 
-    const toolResult = await tool.invoke(call.input, {
-      runContext: ctx,
-      toolCall: call,
-      backend,
-    });
+    let attempts = 0;
+    while (true) {
+      try {
+        const toolCtx = {
+          runContext: ctx,
+          toolCall: call,
+          backend,
+        };
+        const validatedInput = validateToolInput(tool, call.input, toolCtx);
+        const toolResult = await tool.invoke(validatedInput, toolCtx);
 
-    const executionResult: ToolExecutionResult = { tool, call, output: toolResult };
-    const afterDecision = await this.middleware.runAfterTool(ctx, executionResult);
+        const executionResult: ToolExecutionResult = { tool, call, output: toolResult };
+        const afterDecision = await this.middleware.runAfterTool(ctx, executionResult);
 
-    return {
-      call,
-      result: executionResult,
-      statePatches: [...beforeDecision.statePatch, ...afterDecision.statePatch],
-    };
+        return {
+          call,
+          result: executionResult,
+          statePatches: [...beforeDecision.statePatch, ...afterDecision.statePatch],
+        };
+      } catch (error) {
+        const toolError =
+          error instanceof AgentError
+            ? error
+            : new AgentError({
+                code: "TOOL_ERROR",
+                message: error instanceof Error ? error.message : "Tool execution failed",
+                cause: error,
+                metadata: { toolName: call.name, toolCallId: call.id },
+              });
+
+        await this.middleware.runOnError(ctx, toolError);
+        const shouldRetry = this.shouldRetryError(toolError) && attempts < this.toolMaxRetries;
+        if (shouldRetry) {
+          attempts += 1;
+          await sleep(computeBackoffMs(attempts, this.retryBaseDelayMs, this.retryMaxDelayMs));
+          continue;
+        }
+        this.emitAudit(ctx, "tool_failed", {
+          toolName: call.name,
+          toolCallId: call.id,
+          code: toolError.code,
+          message: toolError.message,
+        });
+        throw toolError;
+      }
+    }
   }
 
   /**
@@ -179,7 +260,40 @@ export class ToolExecutor {
     const tool = this.registry.get(call.name);
     return tool?.isConcurrencySafe?.(call.input) ?? false;
   }
+
+  private emitAudit(
+    ctx: AgentRunContext,
+    type: AuditEventType,
+    payload: Record<string, unknown>,
+  ): void {
+    const logger = this.audit ?? ctx.services.audit;
+    if (!logger) return;
+    logger.log({
+      id: generateId(),
+      runId: ctx.state.runId,
+      type,
+      timestamp: new Date().toISOString(),
+      payload,
+    });
+  }
+
+  private shouldRetryError(error: unknown): boolean {
+    if (error instanceof AgentError) return error.retryable;
+    if (!error || typeof error !== "object") return false;
+    const retryable = (error as { retryable?: unknown }).retryable;
+    return retryable === true;
+  }
 }
+
+const computeBackoffMs = (attempt: number, baseDelayMs: number, maxDelayMs: number): number =>
+  Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, attempt - 1));
+
+const sleep = async (ms: number): Promise<void> => {
+  if (ms <= 0) return;
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+};
 
 export type ToolExecutorRunResult =
   | {

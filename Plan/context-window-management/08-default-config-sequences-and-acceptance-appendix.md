@@ -13,22 +13,25 @@
 | 配置项 | 建议默认值 | 说明 |
 | --- | --- | --- |
 | `reservedOutputTokens` | `min(maxOutputTokens, 20000)` | 输出保留窗口 |
-| `warningBufferTokens` | `33000` | 进入 warning 的预警缓冲 |
-| `autoCompactBufferTokens` | `13000` | 触发 auto compact 的缓冲 |
-| `errorBufferTokens` | `20000` | error 风险区缓冲 |
-| `blockingHeadroomTokens` | `3000` | 阻断前必须保留的最小 headroom |
+| `warningBufferTokens` | `20000` | 进入 warning 的预警缓冲（源码 `WARNING_THRESHOLD_BUFFER_TOKENS = 20_000`） |
+| `autoCompactBufferTokens` | `13000` | 触发 auto compact 的缓冲（源码 `AUTOCOMPACT_BUFFER_TOKENS = 13_000`） |
+| `errorBufferTokens` | `20000` | error 风险区缓冲（源码 `ERROR_THRESHOLD_BUFFER_TOKENS = 20_000`） |
+| `blockingHeadroomTokens` | `3000` | 阻断前必须保留的最小 headroom（源码 `MANUAL_COMPACT_BUFFER_TOKENS = 3_000`） |
 | `maxPromptTooLongRetries` | `3` | 主请求 PTL 重试次数 |
 | `maxReactiveCompactAttempts` | `3` | reactive compact 尝试上限 |
-| `maxConsecutiveAutocompactFailures` | `3` | 自动压缩熔断阈值 |
-| `historySnipMinRecentRounds` | `50` | 默认保留最近轮次 |
+| `maxConsecutiveAutocompactFailures` | `3` | 自动压缩熔断阈值（源码 `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`） |
+| `historySnipMinRecentRounds` | `50` | 默认保留最近轮次（源码 `MAX_HISTORY_TURNS = 50`） |
 | `historySnipMaxDropRounds` | `10` | 单次 snip 最大丢弃轮次数 |
+| `historySnipMaxTokens` | `100000` | 触发 history snip 的 token 阈值（源码 `MAX_HISTORY_TOKENS = 100_000`） |
 | `maxToolResultChars` | `120000` | 单轮工具结果总字符预算建议值 |
 | `maxToolResultCharsPerMessage` | `30000` | 单消息工具结果预算建议值 |
-| `recentFilesRehydrateCount` | `5` | 压缩后默认恢复最近文件数 |
-| `recentFilesRehydrateBudgetTokens` | `50000` | 最近文件恢复总预算 |
-| `recentFileBudgetTokens` | `5000` | 单文件恢复预算 |
+| `recentFilesRehydrateCount` | `5` | 压缩后默认恢复最近文件数（源码 `POST_COMPACT_MAX_FILES_TO_RESTORE = 5`） |
+| `recentFilesRehydrateBudgetTokens` | `50000` | 最近文件恢复总预算（源码 `POST_COMPACT_TOKEN_BUDGET = 50_000`） |
+| `recentFileBudgetTokens` | `5000` | 单文件恢复预算（源码 `POST_COMPACT_MAX_TOKENS_PER_FILE = 5_000`） |
 | `planRehydrateBudgetTokens` | `5000` | Plan 恢复预算 |
-| `skillsRehydrateBudgetTokens` | `25000` | Skills 恢复预算 |
+| `skillsRehydrateBudgetTokens` | `25000` | Skills 恢复预算（源码 `POST_COMPACT_SKILLS_TOKEN_BUDGET = 25_000`） |
+| `maxCompactStreamingRetries` | `2` | 压缩请求 streaming 中断后最大重试次数（源码 `MAX_COMPACT_STREAMING_RETRIES = 2`） |
+| `maxOutputTokensForSummary` | `20000` | 摘要请求最大输出 token 数（源码 `MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000`） |
 
 ## 3. 阈值计算附录
 
@@ -37,9 +40,12 @@
 ```ts
 const reservedOutputTokens = Math.min(maxOutputTokens, 20000);
 const effectiveContextWindow = modelContextWindow - reservedOutputTokens;
-const warningThreshold = effectiveContextWindow - warningBufferTokens;
 const autoCompactThreshold = effectiveContextWindow - autoCompactBufferTokens;
-const errorThreshold = autoCompactThreshold - errorBufferTokens;
+const thresholdBase = autoCompactEnabled
+  ? autoCompactThreshold
+  : effectiveContextWindow;
+const warningThreshold = thresholdBase - warningBufferTokens;
+const errorThreshold = thresholdBase - errorBufferTokens;
 const blockingThreshold = effectiveContextWindow - blockingHeadroomTokens;
 ```
 
@@ -47,12 +53,21 @@ const blockingThreshold = effectiveContextWindow - blockingHeadroomTokens;
 
 - `warningThreshold` 用于提醒，不应立即触发高成本压缩。
 - `autoCompactThreshold` 是主动压缩起点。
-- `errorThreshold` 表示即便压缩也可能危险，应收紧预算策略。
+- `errorThreshold` 表示即便压缩也可能危险，应收紧预算策略；其计算口径应与 `warningThreshold` 一致。
 - `blockingThreshold` 表示不允许继续发起模型调用。
 
 ### 3.2 实现要求
 
 无论 `run()` 还是 `stream()`，都必须使用同一公式和同一配置来源。
+
+### 3.3 层级口径附注
+
+本附录默认采用“`Stage 0 + 五层压缩`”口径：
+
+- Stage 0：Tool Result Budget（前置预算门禁）
+- Layer 1-5：History Snip、Microcompact、Context Collapse、Session Memory Compact、Auto Compact
+
+实现里可以把 Stage 0 放在 prepare 阶段或 compaction orchestrator 首阶段，但不可省略。
 
 ## 4. 请求准备时序
 

@@ -8,6 +8,7 @@
     "paths": {
       "@renx/core": ["./packages/core/src/index.ts"],
       "@renx/toolkit": ["./packages/toolkit/src/index.ts"],
+      "@renx/agent": ["./packages/agent/src/index.ts"],
       "@renx/model": ["./packages/model/src/index.ts"],
       "@renx/provider": ["./packages/provider/src/index.ts"],
       "@renx/provider/openai": ["./packages/provider/src/openai/index.ts"]

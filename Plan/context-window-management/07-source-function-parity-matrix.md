@@ -18,6 +18,15 @@
 
 如果本矩阵和前面设计文档发生冲突，以前面六份设计文档定义的行为契约为准。
 
+## 2.1 层级口径说明
+
+本矩阵统一使用“Stage 0 + 五层压缩”口径：
+
+- Stage 0（前置预算门禁）：Tool Result Budget
+- Layer 1-5：History Snip、Microcompact、Context Collapse、Session Memory Compact、Auto Compact
+
+`Reactive Compact` 归类为恢复分支，不并入五层主动压缩。
+
 ## 3. Query Loop 总映射
 
 | Claude Code 源点 | 主要职责 | renx 目标位置 | 必须实现的行为 |
@@ -72,7 +81,7 @@
 - tool_use 与对应 tool_result
 - 同一 provider response 的 streaming chunks
 
-## 7. Tool Result Budget 映射
+## 7. Stage 0 - Tool Result Budget 映射
 
 | Claude Code 源点 | 主要职责 | renx 目标位置 | 推荐接口 |
 | --- | --- | --- | --- |
@@ -91,7 +100,7 @@ interface ToolResultStorageState {
 }
 ```
 
-## 8. 历史裁剪与微压缩映射
+## 8. Layer 1/2 - 历史裁剪与微压缩映射
 
 | Claude Code 源点 | 主要职责 | renx 目标位置 | 推荐接口 |
 | --- | --- | --- | --- |
@@ -104,7 +113,7 @@ interface ToolResultStorageState {
 - `microcompact.ts` 负责“收缩旧工具结果与热点外内容”。
 - 两者不能混成一个“大裁剪函数”，否则日志和调试会失去清晰度。
 
-## 9. Context Collapse 映射
+## 9. Layer 3 - Context Collapse 映射
 
 | Claude Code 源点 | 主要职责 | renx 目标位置 | 推荐接口 |
 | --- | --- | --- | --- |
@@ -120,7 +129,7 @@ interface ToolResultStorageState {
 - reactive compact 前可 clear/drain。
 - checkpoint/resume 可恢复。
 
-## 10. Session Memory Compact 映射
+## 10. Layer 4 - Session Memory Compact 映射
 
 | Claude Code 源点 | 主要职责 | renx 目标位置 | 推荐接口 |
 | --- | --- | --- | --- |
@@ -134,7 +143,7 @@ interface ToolResultStorageState {
 4. 生成 compact boundary。
 5. 构建 post-compact messages。
 
-## 11. Auto Compact 映射
+## 11. Layer 5 - Auto Compact 映射
 
 | Claude Code 源点 | 主要职责 | renx 目标位置 | 推荐接口 |
 | --- | --- | --- | --- |
@@ -161,6 +170,7 @@ interface ToolResultStorageState {
 
 - 主请求过长后触发的 reactive compact。
 - 摘要请求自身过长后的 compact-request retry。
+- 主动压缩路径中的 Layer 5（auto compact）。
 
 这两者不能共用一个“直接再裁一点消息”的简单分支。
 

@@ -25,6 +25,11 @@
 
 这些能力说明，Claude Code 不是“对历史消息做一次摘要”的实现，而是把上下文管理嵌入到 query loop、消息模型、持久化、缓存、恢复逻辑中的一整套系统。
 
+其中压缩机制建议统一口径为：
+
+- Layer 0（前置预算门禁）：Tool Result Budget（不计入五层）
+- Layer 1-5（五层压缩）：History Snip、Microcompact、Context Collapse、Session Memory Compact、Auto Compact
+
 ## 3. Claude Code 的运行视角
 
 从 query loop 角度看，Claude Code 的核心流程可以压缩成下图：
@@ -171,12 +176,12 @@ stateDiagram-v2
 
 先执行不损伤语义、成本更低的压缩层，再进入 LLM 摘要层。顺序上应当是：
 
-1. tool result budget
-2. history snip
-3. microcompact
-4. context collapse
-5. session memory compact
-6. auto compact
+1. layer 0: tool result budget（前置门禁）
+2. layer 1: history snip
+3. layer 2: microcompact
+4. layer 3: context collapse
+5. layer 4: session memory compact
+6. layer 5: auto compact
 
 ### 7.2 所有裁剪都必须是协议安全的
 

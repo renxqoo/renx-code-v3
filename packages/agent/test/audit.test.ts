@@ -99,6 +99,8 @@ describe("runtime audit integration", () => {
     await runtime.run(ctx);
 
     expect(eventTypes).toContain("run_started");
+    expect(eventTypes).toContain("context_budget_measured");
+    expect(eventTypes).toContain("context_layer_applied");
     expect(eventTypes).toContain("model_called");
     expect(eventTypes).toContain("model_returned");
     expect(eventTypes).toContain("run_completed");

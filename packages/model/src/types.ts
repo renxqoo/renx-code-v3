@@ -35,19 +35,47 @@ export interface ModelRequest {
   temperature?: number;
   maxTokens?: number;
   metadata?: Metadata;
+  contextMetadata?: {
+    apiViewId?: string;
+    compactBoundaryId?: string;
+    thresholdLevel?: "healthy" | "warning" | "auto_compact" | "error" | "blocking";
+  };
   observer?: ModelObserver;
   signal?: AbortSignal;
+}
+
+export interface TokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  totalTokens?: number;
+}
+
+export interface IterationContextStats {
+  estimatedInputTokens?: number;
+  effectiveInputTokens?: number;
+  messageCount?: number;
+  toolCount?: number;
+  roundIndex?: number;
 }
 
 export type ModelResponse =
   | {
       type: "final";
       output: string;
+      responseId?: string;
+      usage?: TokenUsage;
+      iteration?: IterationContextStats;
       metadata?: Metadata;
     }
   | {
       type: "tool_calls";
       toolCalls: ToolCall[];
+      responseId?: string;
+      usage?: TokenUsage;
+      iteration?: IterationContextStats;
       metadata?: Metadata;
     };
 
@@ -55,7 +83,7 @@ export type ModelStreamEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_call_delta"; partial: unknown }
   | { type: "tool_call"; call: ToolCall }
-  | { type: "done" };
+  | { type: "done"; responseId?: string; usage?: TokenUsage; iteration?: IterationContextStats };
 
 export interface ProviderRequest {
   url: string;

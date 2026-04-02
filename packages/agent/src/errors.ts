@@ -1,5 +1,7 @@
 export type AgentErrorCode =
   | "MODEL_ERROR"
+  | "CONTEXT_OVERFLOW"
+  | "MEDIA_TOO_LARGE"
   | "TOOL_ERROR"
   | "TOOL_NOT_FOUND"
   | "POLICY_DENIED"

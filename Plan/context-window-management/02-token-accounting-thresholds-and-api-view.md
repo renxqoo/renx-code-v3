@@ -163,7 +163,9 @@ interface ContextBudgetBreakdown {
 ```ts
 effectiveContextWindow = modelContextWindow - reservedOutputTokens;
 autoCompactThreshold = effectiveContextWindow - autoCompactBufferTokens;
-errorThreshold = autoCompactThreshold - errorBufferTokens;
+thresholdBase = autoCompactEnabled ? autoCompactThreshold : effectiveContextWindow;
+warningThreshold = thresholdBase - warningBufferTokens;
+errorThreshold = thresholdBase - errorBufferTokens;
 blockingThreshold = effectiveContextWindow - blockingHeadroomTokens;
 ```
 
@@ -172,6 +174,7 @@ blockingThreshold = effectiveContextWindow - blockingHeadroomTokens;
 - `reservedOutputTokens` 不是固定写死到 0.2 比例，而是显式参数。
 - 实现上建议默认 `min(maxOutputTokens, 20000)` 进入输出保留逻辑。
 - `autoCompactBufferTokens` 建议显式配置，不能只用百分比阈值。
+- `warning/error` 建议都相对同一个 `thresholdBase` 计算，避免和 auto 阈值出现跨层倒挂。
 
 ### 5.2 阈值含义
 
@@ -181,6 +184,8 @@ blockingThreshold = effectiveContextWindow - blockingHeadroomTokens;
 | `auto_compact` | 需要主动压缩 | 执行多层压缩管线 |
 | `error` | 即便压缩仍可能危险 | 升级警告，收紧工具预算 |
 | `blocking` | 已没有安全 headroom | 禁止继续模型调用 |
+
+说明：Claude Code 里 `warning` / `error` 是并行风险信号，工程上可保持两个布尔标记，也可在 `level` 字段中映射为有序等级，但必须保证阈值来源一致。
 
 ### 5.3 状态输出
 

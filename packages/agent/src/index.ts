@@ -25,7 +25,6 @@ export type {
   ApprovalRequest,
   ApprovalDecision,
   ApprovalService,
-  MemoryStore,
   Store,
   RecoveryConfig,
 } from "./types";
@@ -66,12 +65,12 @@ export type {
   ExecOptions,
   ExecResult,
   FileInfo,
-  ValidationResult,
 } from "./tool/types";
 
 export { InMemoryToolRegistry } from "./tool/registry";
 export { ToolExecutor } from "./tool/executor";
 export type { ToolExecutorRunResult, BatchToolResult } from "./tool/executor";
+export { validateToolInput } from "./tool/input-validation";
 export { LocalBackend } from "./tool/local-backend";
 export { DefaultBackendResolver } from "./tool/default-backend-resolver";
 
@@ -94,6 +93,18 @@ export { ConsoleAuditLogger } from "./audit";
 // --- Runtime ---
 export { AgentRuntime } from "./runtime";
 export type { RuntimeConfig } from "./runtime";
+
+// --- Context Window Management ---
+export { ContextOrchestrator, initialContextRuntimeState } from "./context";
+export type {
+  ContextCompressionLayer,
+  ContextManagerConfig,
+  ContextThresholdConfig,
+  ContextBudgetSnapshot,
+  ContextLayerExecution,
+  ContextRuntimeState,
+  CompactBoundaryRecord,
+} from "./context/types";
 
 // --- Base Class ---
 export { EnterpriseAgentBase } from "./base";

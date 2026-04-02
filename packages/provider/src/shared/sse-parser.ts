@@ -1,6 +1,12 @@
 import type { ProviderStreamChunk } from "@renx/model";
 
 export interface OpenAIStreamDelta {
+  id?: string;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
   choices: Array<{
     index: number;
     delta: {

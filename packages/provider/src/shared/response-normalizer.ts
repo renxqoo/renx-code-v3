@@ -1,13 +1,20 @@
-import type { ModelResponse, ProviderResponse, ResponseNormalizer } from "@renx/model";
+import type { ModelResponse, ProviderResponse, ResponseNormalizer, TokenUsage } from "@renx/model";
 
 import type { OpenAIToolCall } from "./types";
 
 export class OpenAIResponseNormalizer implements ResponseNormalizer {
   normalize(response: ProviderResponse): ModelResponse {
+    const responseId = readResponseId(response.body);
+    const usage = readUsage(response.body);
     const message = readMessage(response.body);
 
     if (!message) {
-      return { type: "final", output: "" };
+      return {
+        type: "final",
+        output: "",
+        ...(responseId ? { responseId } : {}),
+        ...(usage ? { usage } : {}),
+      };
     }
 
     if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
@@ -26,10 +33,17 @@ export class OpenAIResponseNormalizer implements ResponseNormalizer {
             },
           ];
         }),
+        ...(responseId ? { responseId } : {}),
+        ...(usage ? { usage } : {}),
       };
     }
 
-    return { type: "final", output: extractText(message.content) };
+    return {
+      type: "final",
+      output: extractText(message.content),
+      ...(responseId ? { responseId } : {}),
+      ...(usage ? { usage } : {}),
+    };
   }
 }
 
@@ -104,3 +118,38 @@ const isOpenAIToolCall = (value: unknown): value is OpenAIToolCall => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+const readResponseId = (body: unknown): string | undefined => {
+  if (!isRecord(body)) return undefined;
+  return typeof body.id === "string" ? body.id : undefined;
+};
+
+const readUsage = (body: unknown): TokenUsage | undefined => {
+  if (!isRecord(body) || !isRecord(body.usage)) return undefined;
+  const usage = body.usage;
+  const completionDetails = isRecord(usage.completion_tokens_details)
+    ? usage.completion_tokens_details
+    : undefined;
+  const promptDetails = isRecord(usage.prompt_tokens_details)
+    ? usage.prompt_tokens_details
+    : undefined;
+  const readNumber = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  const inputTokens = readNumber(usage.prompt_tokens);
+  const outputTokens = readNumber(usage.completion_tokens);
+  const totalTokens = readNumber(usage.total_tokens);
+  const reasoningTokens = completionDetails
+    ? readNumber(completionDetails.reasoning_tokens)
+    : undefined;
+  const cacheReadInputTokens = promptDetails ? readNumber(promptDetails.cached_tokens) : undefined;
+
+  const mapped: TokenUsage = {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
+  };
+
+  return Object.keys(mapped).length > 0 ? mapped : undefined;
+};

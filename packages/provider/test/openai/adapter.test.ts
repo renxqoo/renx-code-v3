@@ -96,6 +96,18 @@ describe("OpenAICompatAdapter (openai)", () => {
       status: 200,
       headers: {},
       body: {
+        id: "resp_123",
+        usage: {
+          prompt_tokens: 120,
+          completion_tokens: 30,
+          total_tokens: 150,
+          completion_tokens_details: {
+            reasoning_tokens: 8,
+          },
+          prompt_tokens_details: {
+            cached_tokens: 60,
+          },
+        },
         choices: [
           {
             message: {
@@ -113,6 +125,14 @@ describe("OpenAICompatAdapter (openai)", () => {
     await expect(adapter.generate(request)).resolves.toEqual({
       type: "final",
       output: "hello back",
+      responseId: "resp_123",
+      usage: {
+        inputTokens: 120,
+        outputTokens: 30,
+        totalTokens: 150,
+        reasoningTokens: 8,
+        cacheReadInputTokens: 60,
+      },
     });
     expect(provider.lastRequest).toMatchObject({
       url: "https://api.openai.com/v1/chat/completions",
@@ -227,13 +247,42 @@ describe("OpenAICompatAdapter (openai)", () => {
     expect(provider.lastRequest?.signal).toBe(controller.signal);
   });
 
+  it("passes context metadata into provider metadata", async () => {
+    const provider = new RecordingProvider({
+      status: 200,
+      headers: {},
+      body: { choices: [{ message: { content: "ok" } }] },
+    });
+    const adapter = new OpenAICompatAdapter(provider, {
+      name: "openai",
+      endpoint: "https://api.openai.com/v1/chat/completions",
+    });
+
+    await adapter.generate({
+      ...request,
+      metadata: { traceId: "trace_1" },
+      contextMetadata: {
+        apiViewId: "api_view_1",
+        compactBoundaryId: "boundary_1",
+        thresholdLevel: "warning",
+      },
+    });
+
+    expect(provider.lastRequest?.metadata).toMatchObject({
+      traceId: "trace_1",
+      contextApiViewId: "api_view_1",
+      contextCompactBoundaryId: "boundary_1",
+      contextThresholdLevel: "warning",
+    });
+  });
+
   // ── streaming ──
 
   it("streams text delta events", async () => {
     const provider = new StreamingProvider([
       'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
       'data: {"choices":[{"delta":{"content":" there"}}]}\n\n',
-      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+      'data: {"id":"resp_stream_1","usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13},"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
       "data: [DONE]\n\n",
     ]);
 
@@ -251,7 +300,15 @@ describe("OpenAICompatAdapter (openai)", () => {
     expect(events).toEqual([
       { type: "text_delta", text: "Hi" },
       { type: "text_delta", text: " there" },
-      { type: "done" },
+      {
+        type: "done",
+        responseId: "resp_stream_1",
+        usage: {
+          inputTokens: 10,
+          outputTokens: 3,
+          totalTokens: 13,
+        },
+      },
     ]);
   });
 

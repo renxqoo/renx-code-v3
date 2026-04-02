@@ -41,6 +41,12 @@ importers:
       '@renx/model':
         specifier: workspace:*
         version: link:../model
+      zod:
+        specifier: latest
+        version: 4.3.6
+      zod-to-json-schema:
+        specifier: latest
+        version: 3.25.2(zod@4.3.6)
 
   packages/app:
     dependencies:
@@ -53,6 +59,9 @@ importers:
       '@renx/toolkit':
         specifier: workspace:*
         version: link:../toolkit
+      zod:
+        specifier: latest
+        version: 4.3.6
 
   packages/core: {}
 
@@ -1340,6 +1349,14 @@ packages:
     resolution: {integrity: sha512-7dSzzRQ++CKnNI/krKnYRV7JKKPUXMEh61soaHKg9mrWEhzFWhFnxPxGl+69cD1Ou63C13NUPCnmIcrvqCuM6w==}
     engines: {node: '>=12'}
 
+  zod-to-json-schema@3.25.2:
+    resolution: {integrity: sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==}
+    peerDependencies:
+      zod: ^3.25.28 || ^4
+
+  zod@4.3.6:
+    resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
+
 snapshots:
 
   '@emnapi/core@1.9.1':
@@ -2291,3 +2308,9 @@ snapshots:
       string-width: 4.2.3
       y18n: 5.0.8
       yargs-parser: 21.1.1
+
+  zod-to-json-schema@3.25.2(zod@4.3.6):
+    dependencies:
+      zod: 4.3.6
+
+  zod@4.3.6: {}

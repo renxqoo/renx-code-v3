@@ -6,6 +6,7 @@ import { MiddlewarePipeline } from "./middleware/pipeline";
 import { AgentMemoryMiddleware } from "./middleware/agent-memory";
 import type { AgentMiddleware } from "./middleware/types";
 import { AllowAllPolicy } from "./policy";
+import { initialContextRuntimeState } from "./context";
 import type {
   AgentIdentity,
   AgentInput,
@@ -21,6 +22,7 @@ import type {
   PolicyEngine,
 } from "./types";
 import type { AgentTool, BackendResolver } from "./tool/types";
+import type { ContextManagerConfig } from "./context/types";
 
 /**
  * Abstract base class for enterprise agents.
@@ -86,6 +88,14 @@ export abstract class EnterpriseAgentBase {
     return undefined;
   }
 
+  protected getContextConfig(): Partial<ContextManagerConfig> | undefined {
+    return undefined;
+  }
+
+  protected getRetryConfig(): RuntimeConfig["retry"] | undefined {
+    return undefined;
+  }
+
   protected getIdentity(): AgentIdentity {
     return {
       userId: "unknown",
@@ -145,6 +155,7 @@ export abstract class EnterpriseAgentBase {
       messages: input.messages ?? [],
       scratchpad: {},
       memory: {},
+      context: initialContextRuntimeState(),
       stepCount: 0,
       status: "running",
     };
@@ -172,6 +183,7 @@ export abstract class EnterpriseAgentBase {
       identity: this.getIdentity(),
       state: {
         ...record.state,
+        context: record.state.context ?? initialContextRuntimeState(),
         status: "running",
       },
       services: this.buildServices(),
@@ -204,6 +216,8 @@ export abstract class EnterpriseAgentBase {
     const checkpoint = this.getCheckpointStore();
     const audit = this.getAuditLogger();
     const backendResolver = this.getBackendResolver();
+    const context = this.getContextConfig();
+    const retry = this.getRetryConfig();
 
     const config: RuntimeConfig = {
       name: this.getName(),
@@ -217,6 +231,8 @@ export abstract class EnterpriseAgentBase {
       systemPrompt: await this.getSystemPrompt(ctx),
       maxSteps: this.getMaxSteps(),
       ...(backendResolver ? { backendResolver } : {}),
+      ...(context ? { context } : {}),
+      ...(retry ? { retry } : {}),
     };
 
     return new AgentRuntime(config);

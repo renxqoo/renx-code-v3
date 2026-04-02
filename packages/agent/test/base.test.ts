@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import type { ModelClient, ModelResponse } from "@renx/model";
 
 import { EnterpriseAgentBase } from "../src/base";
 import { InMemoryCheckpointStore } from "../src/checkpoint";
-import type { AgentTool, ToolResult } from "../src";
+import type { AgentTool, RuntimeConfig, ToolResult } from "../src";
 import { buildInput } from "./helpers";
+import type { CheckpointRecord } from "../src/types";
 
 // --- Mock ModelClient ---
 
@@ -29,6 +31,7 @@ function createMockModelClient(responses: ModelResponse[]): ModelClient {
 const echoTool: AgentTool = {
   name: "echo",
   description: "Echoes input",
+  schema: z.object({}).passthrough(),
   invoke: async (input: unknown): Promise<ToolResult> => ({
     content: JSON.stringify(input),
   }),
@@ -40,6 +43,7 @@ class TestAgent extends EnterpriseAgentBase {
   constructor(
     private readonly client: ModelClient,
     private readonly checkpointStore?: InMemoryCheckpointStore,
+    private readonly retryConfig?: RuntimeConfig["retry"],
   ) {
     super();
   }
@@ -70,6 +74,10 @@ class TestAgent extends EnterpriseAgentBase {
 
   protected getCheckpointStore() {
     return this.checkpointStore;
+  }
+
+  protected getRetryConfig() {
+    return this.retryConfig;
   }
 }
 
@@ -129,5 +137,119 @@ describe("EnterpriseAgentBase", () => {
     const agent = new TestAgent(client);
 
     await expect(agent.resume("any-id")).rejects.toThrow("CheckpointStore is required");
+  });
+
+  it("resume projects API view from latest compact boundary", async () => {
+    let observedMessageIds: string[] = [];
+    const modelClient: ModelClient = {
+      generate: async (request) => {
+        observedMessageIds = request.messages.map((m) => m.id);
+        return { type: "final", output: "resumed" };
+      },
+      stream: async function* () {
+        yield { type: "done" as const };
+      },
+      resolve: () => ({
+        logicalModel: "test",
+        provider: "test",
+        providerModel: "test",
+      }),
+    };
+
+    const checkpoint = new InMemoryCheckpointStore();
+    const runId = "run_resume_boundary";
+    const record: CheckpointRecord = {
+      runId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      state: {
+        runId,
+        status: "running",
+        stepCount: 0,
+        scratchpad: {},
+        memory: {},
+        messages: [
+          {
+            id: "old_1",
+            messageId: "old_1_msg",
+            role: "user",
+            content: "old",
+            createdAt: new Date().toISOString(),
+            source: "input",
+          },
+          {
+            id: "boundary",
+            messageId: "boundary_msg",
+            role: "system",
+            content: "[Compact Boundary]",
+            createdAt: new Date().toISOString(),
+            source: "framework",
+            compactBoundary: {
+              boundaryId: "b1",
+              strategy: "auto_compact",
+              createdAt: new Date().toISOString(),
+            },
+          },
+          {
+            id: "tail_1",
+            messageId: "tail_1_msg",
+            role: "assistant",
+            content: "tail",
+            createdAt: new Date().toISOString(),
+            source: "model",
+          },
+        ],
+        context: {
+          roundIndex: 0,
+          lastLayerExecutions: [],
+          consecutiveCompactFailures: 0,
+          promptTooLongRetries: 0,
+          toolResultCache: {},
+          preservedSegments: {},
+          compactBoundaries: [],
+        },
+      },
+    };
+    await checkpoint.save(record);
+
+    const agent = new TestAgent(modelClient, checkpoint);
+    const result = await agent.resume(runId);
+
+    expect(result.status).toBe("completed");
+    expect(observedMessageIds).toContain("boundary");
+    expect(observedMessageIds).toContain("tail_1");
+    expect(observedMessageIds).not.toContain("old_1");
+  });
+
+  it("passes retry config from base to runtime", async () => {
+    let called = 0;
+    const flakyClient: ModelClient = {
+      generate: async () => {
+        called += 1;
+        if (called === 1) {
+          throw { code: "MODEL_ERROR", message: "temp", retryable: true };
+        }
+        return { type: "final", output: "Recovered from base retry config" };
+      },
+      stream: async function* () {
+        yield { type: "done" as const };
+      },
+      resolve: () => ({
+        logicalModel: "test",
+        provider: "test",
+        providerModel: "test",
+      }),
+    };
+
+    const agent = new TestAgent(flakyClient, undefined, {
+      modelMaxRetries: 2,
+      retryBaseDelayMs: 1,
+      retryMaxDelayMs: 2,
+    });
+    const result = await agent.invoke(buildInput({ inputText: "retry" }));
+
+    expect(result.status).toBe("completed");
+    expect(result.output).toBe("Recovered from base retry config");
+    expect(called).toBe(2);
   });
 });

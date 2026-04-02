@@ -6,6 +6,7 @@ export type { Metadata } from "@renx/model";
 import type { AgentError } from "./errors";
 import type { AgentTool, ToolResult } from "./tool/types";
 import type { RunMessage } from "./message/types";
+import type { ContextRuntimeState } from "./context/types";
 
 // Re-export tool types needed by other modules
 export type {
@@ -35,6 +36,7 @@ export interface AgentState {
   lastModelResponse?: ModelResponse;
   lastToolCall?: ToolCall;
   lastToolResult?: ToolResult;
+  context?: ContextRuntimeState;
   error?: AgentError;
 }
 
@@ -42,8 +44,10 @@ export interface AgentState {
 
 export interface AgentStatePatch {
   appendMessages?: RunMessage[];
+  replaceMessages?: RunMessage[];
   setScratchpad?: Metadata;
   mergeMemory?: Metadata;
+  setContext?: ContextRuntimeState;
   setStatus?: AgentStatus;
   setError?: AgentError;
 }
@@ -89,9 +93,6 @@ export interface Store<T = Metadata> {
   save?(ctx: AgentRunContext, data: T): Promise<void> | void;
 }
 
-/** Backward-compatible alias. */
-export type MemoryStore = Store<Metadata>;
-
 export interface PolicyEngine {
   filterTools(ctx: AgentRunContext, tools: AgentTool[]): Promise<AgentTool[]> | AgentTool[];
   canUseTool(ctx: AgentRunContext, tool: AgentTool, input: unknown): Promise<boolean> | boolean;
@@ -113,6 +114,13 @@ export interface CheckpointRecord {
 
 export type AuditEventType =
   | "run_started"
+  | "context_budget_measured"
+  | "context_warning_entered"
+  | "context_auto_compact_triggered"
+  | "context_blocking_triggered"
+  | "context_layer_applied"
+  | "context_recovery_retry"
+  | "context_usage_snapshot_updated"
   | "model_called"
   | "model_returned"
   | "tool_called"

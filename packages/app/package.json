@@ -15,6 +15,7 @@
   "dependencies": {
     "@renx/agent": "workspace:*",
     "@renx/provider": "workspace:*",
-    "@renx/toolkit": "workspace:*"
+    "@renx/toolkit": "workspace:*",
+    "zod": "latest"
   }
 }

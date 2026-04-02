@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { AllowAllPolicy } from "../src/policy";
 import type { PolicyEngine } from "../src/types";
@@ -8,12 +9,14 @@ import { baseCtx } from "./helpers";
 const mockTool: AgentTool = {
   name: "test",
   description: "A test tool",
+  schema: z.object({}).passthrough(),
   invoke: async (): Promise<ToolResult> => ({ content: "ok" }),
 };
 
 const otherTool: AgentTool = {
   name: "other",
   description: "Another test tool",
+  schema: z.object({}).passthrough(),
   invoke: async (): Promise<ToolResult> => ({ content: "other" }),
 };
 

@@ -9,6 +9,7 @@
  */
 
 import { createModelClient, createOpenRouterProvider } from "@renx/provider";
+import { z } from "zod";
 import {
   EnterpriseAgentBase,
   InMemoryCheckpointStore,
@@ -29,8 +30,6 @@ import type {
   AgentStreamEvent,
   PolicyEngine,
   ToolResult,
-  ToolContext,
-  ValidationResult,
 } from "@renx/agent";
 
 // ============================================================
@@ -41,13 +40,7 @@ import type {
 const getWeatherTool: AgentTool = {
   name: "get_weather",
   description: "获取指定城市的天气信息",
-  inputSchema: {
-    type: "object",
-    properties: {
-      city: { type: "string", description: "城市名称" },
-    },
-    required: ["city"],
-  },
+  schema: z.object({ city: z.string().min(1) }),
   invoke: async (input: unknown): Promise<ToolResult> => {
     const { city } = input as { city: string };
     const weatherData: Record<string, { temp: string; desc: string }> = {
@@ -68,13 +61,7 @@ const getWeatherTool: AgentTool = {
 const getStockPriceTool: AgentTool = {
   name: "get_stock_price",
   description: "获取股票价格",
-  inputSchema: {
-    type: "object",
-    properties: {
-      symbol: { type: "string", description: "股票代码" },
-    },
-    required: ["symbol"],
-  },
+  schema: z.object({ symbol: z.string().min(1) }),
   invoke: async (input: unknown): Promise<ToolResult> => {
     const { symbol } = input as { symbol: string };
     const price = (Math.random() * 200 + 50).toFixed(2);
@@ -92,13 +79,7 @@ const getStockPriceTool: AgentTool = {
 const calculatorTool: AgentTool = {
   name: "calculator",
   description: "执行数学计算，支持加减乘除和括号",
-  inputSchema: {
-    type: "object",
-    properties: {
-      expression: { type: "string", description: "数学表达式，如 '2 + 3 * 4'" },
-    },
-    required: ["expression"],
-  },
+  schema: z.object({ expression: z.string().min(1) }),
   invoke: async (input: unknown): Promise<ToolResult> => {
     const { expression } = input as { expression: string };
     try {
@@ -120,34 +101,15 @@ const calculatorTool: AgentTool = {
 const translateTool: AgentTool = {
   name: "translate",
   description: "将文本翻译为指定语言",
-  inputSchema: {
-    type: "object",
-    properties: {
-      text: { type: "string", description: "要翻译的文本" },
-      targetLang: { type: "string", description: "目标语言，如 en、zh、ja" },
-    },
-    required: ["text", "targetLang"],
-  },
+  schema: z.object({
+    text: z.string().trim().min(1),
+    targetLang: z.enum(["en", "zh", "ja", "ko", "fr", "de"]),
+  }),
   isConcurrencySafe(_input: unknown): boolean {
     return true;
   },
   isReadOnly(_input: unknown): boolean {
     return true;
-  },
-  validateInput(input: unknown, _ctx: ToolContext): ValidationResult {
-    const { text, targetLang } = input as { text?: string; targetLang?: string };
-    if (!text || text.trim().length === 0) {
-      return { result: false, message: "text must be a non-empty string", code: "INVALID_TEXT" };
-    }
-    const supported = ["en", "zh", "ja", "ko", "fr", "de"];
-    if (!targetLang || !supported.includes(targetLang)) {
-      return {
-        result: false,
-        message: `targetLang must be one of: ${supported.join(", ")}`,
-        code: "UNSUPPORTED_LANG",
-      };
-    }
-    return { result: true };
   },
   invoke: async (input: unknown): Promise<ToolResult> => {
     const { text, targetLang } = input as { text: string; targetLang: string };
@@ -449,27 +411,8 @@ async function demo3() {
     metadata: {},
   };
 
-  // --- 验证 translate 工具的 validateInput ---
-  console.log("  --- validateInput 测试 ---");
-  const validResult = translateTool.validateInput!(
-    { text: "hello", targetLang: "zh" },
-    {
-      runContext: ctx,
-      toolCall: { id: "test", name: "translate", input: {} },
-      backend: undefined,
-    },
-  );
-  console.log(`  合法输入: ${JSON.stringify(validResult)}`);
-
-  const invalidResult = translateTool.validateInput!(
-    { text: "", targetLang: "xx" },
-    {
-      runContext: ctx,
-      toolCall: { id: "test", name: "translate", input: {} },
-      backend: undefined,
-    },
-  );
-  console.log(`  非法输入: ${JSON.stringify(invalidResult)}`);
+  // --- zod schema 校验（通过 ToolExecutor 自动执行） ---
+  console.log("  --- schema 校验由执行器统一处理 ---");
 
   // --- 测试 isConcurrencySafe / isReadOnly ---
   console.log("\n  --- 工具属性 ---");

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { InMemoryToolRegistry } from "../../src/tool/registry";
 import type { AgentTool, ToolResult } from "../../src/tool/types";
@@ -6,6 +7,7 @@ import type { AgentTool, ToolResult } from "../../src/tool/types";
 const echoTool: AgentTool = {
   name: "echo",
   description: "Echoes input",
+  schema: z.object({}).passthrough(),
   invoke: async (input: unknown): Promise<ToolResult> => ({
     content: JSON.stringify(input),
   }),
@@ -14,6 +16,7 @@ const echoTool: AgentTool = {
 const searchTool: AgentTool = {
   name: "search",
   description: "Searches for things",
+  schema: z.object({}).passthrough(),
   invoke: async (input: unknown): Promise<ToolResult> => ({
     content: `Results for: ${JSON.stringify(input)}`,
   }),

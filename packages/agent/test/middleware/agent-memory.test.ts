@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { AgentError } from "../../src/errors";
 import { AgentMemoryMiddleware } from "../../src/middleware/agent-memory";
@@ -17,7 +18,12 @@ function makeStore(overrides?: {
 
 function makeToolResult() {
   return {
-    tool: { name: "test", description: "desc", invoke: async () => ({ content: "" }) },
+    tool: {
+      name: "test",
+      description: "desc",
+      schema: z.object({}).passthrough(),
+      invoke: async () => ({ content: "" }),
+    },
     call: { id: "tc_1", name: "test", input: {} },
     output: { content: "done" },
   };

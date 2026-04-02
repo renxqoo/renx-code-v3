@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import type { ToolCall } from "@renx/model";
 
+import { AgentError } from "../../src/errors";
 import { ToolExecutor } from "../../src/tool/executor";
 import { InMemoryToolRegistry } from "../../src/tool/registry";
 import type { AgentTool, ToolResult } from "../../src/tool/types";
@@ -11,6 +13,7 @@ import { baseCtx } from "../helpers";
 const echoTool: AgentTool = {
   name: "echo",
   description: "Echoes input",
+  schema: z.object({}).passthrough(),
   invoke: async (input: unknown): Promise<ToolResult> => ({
     content: JSON.stringify(input),
   }),
@@ -19,6 +22,7 @@ const echoTool: AgentTool = {
 const safeTool: AgentTool = {
   name: "safe-echo",
   description: "Concurrency-safe echo",
+  schema: z.object({}).passthrough(),
   invoke: async (input: unknown): Promise<ToolResult> => ({
     content: JSON.stringify(input),
   }),
@@ -28,6 +32,7 @@ const safeTool: AgentTool = {
 const failTool: AgentTool = {
   name: "fail",
   description: "Always fails",
+  schema: z.object({}).passthrough(),
   invoke: async (): Promise<ToolResult> => {
     throw new Error("Tool failed");
   },
@@ -57,6 +62,25 @@ describe("ToolExecutor", () => {
     expect(result.shouldStop).toBe(false);
   });
 
+  it("throws validation error for invalid input", async () => {
+    const registry = new InMemoryToolRegistry();
+    registry.register({
+      name: "strict-echo",
+      description: "Requires message field",
+      schema: z.object({ message: z.string() }),
+      invoke: async (input: unknown): Promise<ToolResult> => ({
+        content: JSON.stringify(input),
+      }),
+    });
+
+    const executor = new ToolExecutor(registry, new MiddlewarePipeline());
+    const invalidCall: ToolCall = { id: "tc_invalid", name: "strict-echo", input: { bad: true } };
+
+    await expect(executor.run(invalidCall, baseCtx())).rejects.toThrow(
+      'Invalid input for tool "strict-echo"',
+    );
+  });
+
   it("throws for unknown tool", async () => {
     const registry = new InMemoryToolRegistry();
     const executor = new ToolExecutor(registry, new MiddlewarePipeline());
@@ -72,6 +96,35 @@ describe("ToolExecutor", () => {
     const failCall: ToolCall = { id: "tc_2", name: "fail", input: {} };
 
     await expect(executor.run(failCall, baseCtx())).rejects.toThrow("Tool failed");
+  });
+
+  it("runs middleware onError and emits tool_failed audit on tool error", async () => {
+    const registry = new InMemoryToolRegistry();
+    registry.register(failTool);
+
+    let onErrorCalled = false;
+    const events: string[] = [];
+    const pipeline = new MiddlewarePipeline([
+      {
+        name: "error-mw",
+        onError: () => {
+          onErrorCalled = true;
+        },
+      },
+    ]);
+
+    const executor = new ToolExecutor(registry, pipeline);
+    const failCall: ToolCall = { id: "tc_2", name: "fail", input: {} };
+    const ctx = baseCtx();
+    ctx.services.audit = {
+      log: (event) => {
+        events.push(event.type);
+      },
+    };
+
+    await expect(executor.run(failCall, ctx)).rejects.toThrow("Tool failed");
+    expect(onErrorCalled).toBe(true);
+    expect(events).toContain("tool_failed");
   });
 
   it("stops when middleware signals stopCurrentStep", async () => {
@@ -153,6 +206,7 @@ describe("ToolExecutor", () => {
     registry.register({
       name: "echo",
       description: "Echoes input",
+      schema: z.object({}).passthrough(),
       invoke: async (input: unknown, ctx): Promise<ToolResult> => {
         capturedBackend = ctx.backend;
         return { content: JSON.stringify(input) };
@@ -181,6 +235,7 @@ describe("ToolExecutor", () => {
     registry.register({
       name: "echo",
       description: "Echoes input",
+      schema: z.object({}).passthrough(),
       invoke: async (_input: unknown, ctx): Promise<ToolResult> => {
         capturedCtx = ctx;
         return { content: "ok" };
@@ -230,6 +285,7 @@ describe("ToolExecutor", () => {
       const trackingTool: AgentTool = {
         name: "safe-echo",
         description: "Concurrency-safe echo",
+        schema: z.object({ id: z.string() }),
         invoke: async (input: unknown): Promise<ToolResult> => {
           const callInput = input as { id: string };
           executionOrder.push(`start:${callInput.id}`);
@@ -291,6 +347,69 @@ describe("ToolExecutor", () => {
       await expect(executor.runBatch(calls, baseCtx())).rejects.toThrow(
         "Tool not found: nonexistent",
       );
+    });
+
+    it("runs middleware onError and emits tool_failed audit in batch", async () => {
+      const registry = new InMemoryToolRegistry();
+      registry.register(failTool);
+
+      let onErrorCalled = false;
+      const events: string[] = [];
+      const pipeline = new MiddlewarePipeline([
+        {
+          name: "error-mw",
+          onError: () => {
+            onErrorCalled = true;
+          },
+        },
+      ]);
+      const executor = new ToolExecutor(registry, pipeline);
+      const ctx = baseCtx();
+      ctx.services.audit = {
+        log: (event) => {
+          events.push(event.type);
+        },
+      };
+
+      await expect(
+        executor.runBatch([{ id: "tc_1", name: "fail", input: {} }], ctx),
+      ).rejects.toThrow("Tool failed");
+      expect(onErrorCalled).toBe(true);
+      expect(events).toContain("tool_failed");
+    });
+
+    it("retries retryable errors in batch and then succeeds", async () => {
+      const registry = new InMemoryToolRegistry();
+      let called = 0;
+      registry.register({
+        name: "flaky-batch",
+        description: "fails once",
+        schema: z.object({}).passthrough(),
+        invoke: async (): Promise<ToolResult> => {
+          called += 1;
+          if (called === 1) {
+            throw new AgentError({
+              code: "TOOL_ERROR",
+              message: "temporary batch error",
+              retryable: true,
+            });
+          }
+          return { content: "ok" };
+        },
+      });
+
+      const executor = new ToolExecutor(registry, new MiddlewarePipeline(), undefined, undefined, {
+        toolMaxRetries: 1,
+        retryBaseDelayMs: 1,
+        retryMaxDelayMs: 1,
+      });
+      const results = await executor.runBatch(
+        [{ id: "tc_1", name: "flaky-batch", input: {} }],
+        baseCtx(),
+      );
+      expect(results).toHaveLength(1);
+      expect(results[0]!.result.output.content).toBe("ok");
+      expect(called).toBe(2);
     });
   });
 });

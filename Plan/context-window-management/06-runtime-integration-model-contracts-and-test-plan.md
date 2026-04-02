@@ -8,11 +8,11 @@
 
 需要改造的核心文件如下：
 
-- `D:\work\renx-code-v3\packages\agent\src\runtime.ts`
-- `D:\work\renx-code-v3\packages\agent\src\base.ts`
-- `D:\work\renx-code-v3\packages\agent\src\types.ts`
-- `D:\work\renx-code-v3\packages\agent\src\message\manager.ts`
-- `D:\work\renx-code-v3\packages\agent\src\message\types.ts`
+- `packages/agent/src/runtime.ts`
+- `packages/agent/src/base.ts`
+- `packages/agent/src/types.ts`
+- `packages/agent/src/message/manager.ts`
+- `packages/agent/src/message/types.ts`
 
 ### 2.1 runtime.ts
 
@@ -22,13 +22,14 @@
 1. 构建基础消息视图
 2. 过滤工具与生成 tool definitions
 3. 投影 API view
-4. 测量 token 与阈值状态
-5. 若进入 auto compact 区，执行压缩编排
-6. 压缩后重新投影 API view
-7. 若进入 blocking 区，阻断本轮调用
-8. 发起模型请求
-9. 若 provider 返回 PTL / media / output budget 错误，执行 recovery
-10. 成功后记录 usage、response metadata、iteration stats
+4. 执行 Stage 0（tool result budget 前置门禁）
+5. 测量 token 与阈值状态
+6. 若进入 auto compact 区，按五层压缩编排执行
+7. 压缩后重新投影 API view
+8. 若进入 blocking 区，阻断本轮调用
+9. 发起模型请求
+10. 若 provider 返回 PTL / media / output budget 错误，执行 recovery
+11. 成功后记录 usage、response metadata、iteration stats
 ```
 
 ### 2.2 base.ts
@@ -69,7 +70,7 @@ protected createContextOrchestrator(): ContextOrchestrator | undefined
 
 ## 3. 模型层契约扩展
 
-`D:\work\renx-code-v3\packages\model\src\types.ts` 当前不够支撑上下文管理，至少要补充以下内容。
+`packages/model/src/types.ts` 当前不够支撑上下文管理，至少要补充以下内容。
 
 ### 3.1 请求扩展
 

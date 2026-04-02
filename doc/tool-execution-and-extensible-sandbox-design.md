@@ -216,7 +216,7 @@ export interface ToolContext {
 export interface AgentTool {
   name: string;
   description: string;
-  inputSchema?: unknown;
+  schema: ZodType<unknown>;
   capabilities?: string[];
   invoke(input: unknown, ctx: ToolContext): Promise<ToolResult>;
 }
@@ -304,7 +304,7 @@ flowchart TD
     B --> C{"找到 Tool?"}
     C -->|否| D["抛 TOOL_NOT_FOUND"]
     C -->|是| E["ToolMiddleware.beforeTool"]
-    E --> F["validate inputSchema"]
+    E --> F["validate zod schema"]
     F --> G["resolve backend"]
     G --> H["tool.invoke(input, ctx)"]
     H --> I["ToolMiddleware.afterTool"]
@@ -343,7 +343,7 @@ export class ToolExecutor {
 
     const patchedCall = await this.middleware.runBeforeTool(ctx, call);
 
-    // 这里可以接 JSON schema 校验
+    // 工具入参由 zod schema 统一校验
     const backend = await this.backendResolver.resolve(ctx, tool, patchedCall);
 
     let output = await tool.invoke(patchedCall.input, {
@@ -601,14 +601,10 @@ export class ExecuteTool implements AgentTool {
   description = "Execute a shell command";
   capabilities = ["requires-exec"];
 
-  inputSchema = {
-    type: "object",
-    properties: {
-      command: { type: "string" },
-      cwd: { type: "string" },
-    },
-    required: ["command"],
-  };
+  schema = z.object({
+    command: z.string().min(1),
+    cwd: z.string().optional(),
+  });
 
   async invoke(input: any, ctx: ToolContext): Promise<ToolResult> {
     if (!ctx.backend?.exec) {
@@ -828,13 +824,9 @@ export class ReadFileTool implements AgentTool {
   description = "Read a file from execution backend";
   capabilities = ["requires-filesystem-read"];
 
-  inputSchema = {
-    type: "object",
-    properties: {
-      path: { type: "string" },
-    },
-    required: ["path"],
-  };
+  schema = z.object({
+    path: z.string().min(1),
+  });
 
   async invoke(input: any, ctx: ToolContext): Promise<ToolResult> {
     if (!ctx.backend?.readFile) {
@@ -871,7 +863,7 @@ export class ReadFileTool implements AgentTool {
 
 适合做：
 
-- schema 二次校验
+- zod schema 参数校验
 - policy 检查
 - 审批
 - backend 选择前的限制判断

@@ -5,6 +5,8 @@ export type {
   ModelCapabilities,
   RegisteredModel,
   ResolvedModel,
+  TokenUsage,
+  IterationContextStats,
 } from "./types";
 
 export type {
