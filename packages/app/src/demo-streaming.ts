@@ -643,11 +643,22 @@ async function runOnce(
   conversationMessages: AgentInput["messages"],
 ): Promise<AgentResult> {
   let eventCount = 0;
-  const stream = agent.stream(
-    conversationMessages
-      ? { inputText: prompt, messages: conversationMessages }
-      : { inputText: prompt },
-  );
+  const hasHistory = (conversationMessages?.length ?? 0) > 0;
+  const stream = hasHistory
+    ? agent.stream({
+        messages: [
+          ...conversationMessages!,
+          {
+            id: `in_${Date.now()}`,
+            messageId: `in_msg_${Date.now()}`,
+            role: "user",
+            content: prompt,
+            createdAt: new Date().toISOString(),
+            source: "input",
+          },
+        ],
+      })
+    : agent.stream({ inputText: prompt });
 
   while (true) {
     const step = await stream.next();
@@ -658,10 +669,9 @@ async function runOnce(
     printEvent(step.value, eventCount);
   }
 }
-
+let conversationMessages: AgentInput["messages"] = [];
 async function runInteractive(agent: LifeAssistantAgent) {
   const rl = createInterface({ input, output });
-  let conversationMessages: AgentInput["messages"] = [];
 
   console.log("输入 /help 查看命令，输入 /exit 退出。\n");
 
