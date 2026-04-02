@@ -33,7 +33,7 @@ import type { ContextManagerConfig } from "./context/types";
  *
  * Usage:
  * ```ts
- * class MyAgent extends EnterpriseAgentBase {
+ * class MyAgent extends AgentBase {
  *   protected getName() { return "my-agent"; }
  *   protected getSystemPrompt() { return "You are a helpful assistant."; }
  *   protected getTools() { return [new EchoTool()]; }
@@ -45,7 +45,7 @@ import type { ContextManagerConfig } from "./context/types";
  * const result = await agent.invoke({ inputText: "Hello!" });
  * ```
  */
-export abstract class EnterpriseAgentBase {
+export abstract class AgentBase {
   // --- Abstract methods (must override) ---
 
   protected abstract getName(): string;

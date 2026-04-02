@@ -2,7 +2,7 @@
  * @renx/agent 企业级 Agent SDK Demo（v2）
  *
  * 4 个递进式场景，覆盖 SDK 所有核心能力：
- *  Demo 1 — 基础天气助手（EnterpriseAgentBase + invoke）
+ *  Demo 1 — 基础天气助手（AgentBase + invoke）
  *  Demo 2 — 流式金融助手（stream + 中间件 + 策略 + 审计 + Checkpoint）
  *  Demo 3 — 多工具并发 + 输入验证（ToolExecutor.runBatch + isConcurrencySafe + validateInput）
  *  Demo 4 — 直接使用 AgentRuntime（手动构建 context + runtime）
@@ -11,7 +11,7 @@
 import { createModelClient, createOpenRouterProvider } from "@renx/provider";
 import { z } from "zod";
 import {
-  EnterpriseAgentBase,
+  AgentBase,
   InMemoryCheckpointStore,
   ConsoleAuditLogger,
   AgentRuntime,
@@ -193,10 +193,10 @@ function tokenize(expr: string): string[] {
 }
 
 // ============================================================
-// Demo 1: 基础天气助手（EnterpriseAgentBase + invoke）
+// Demo 1: 基础天气助手（AgentBase + invoke）
 // ============================================================
 
-class WeatherAgent extends EnterpriseAgentBase {
+class WeatherAgent extends AgentBase {
   private modelClient;
 
   constructor(modelClient: ReturnType<typeof createModelClient>) {
@@ -223,7 +223,7 @@ class WeatherAgent extends EnterpriseAgentBase {
 
 async function demo1(client: ReturnType<typeof createModelClient>) {
   console.log("╔══════════════════════════════════════════════════════════════╗");
-  console.log("║  Demo 1: 基础天气助手 — EnterpriseAgentBase + invoke()     ║");
+  console.log("║  Demo 1: 基础天气助手 — AgentBase + invoke()     ║");
   console.log("╚══════════════════════════════════════════════════════════════╝\n");
 
   const agent = new WeatherAgent(client);
@@ -289,7 +289,7 @@ class WhitelistPolicy implements PolicyEngine {
   }
 }
 
-class StreamingFinanceAgent extends EnterpriseAgentBase {
+class StreamingFinanceAgent extends AgentBase {
   private modelClient;
 
   constructor(modelClient: ReturnType<typeof createModelClient>) {

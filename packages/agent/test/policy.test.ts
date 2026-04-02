@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { AllowAllPolicy } from "../src/policy";
+import { AllowAllPolicy, ToolDenyListPolicy } from "../src/policy";
 import type { PolicyEngine } from "../src/types";
 import type { AgentTool, ToolResult } from "../src/tool/types";
 import { baseCtx } from "./helpers";
@@ -31,6 +31,21 @@ describe("AllowAllPolicy", () => {
   it("always allows tool use", () => {
     const policy = new AllowAllPolicy();
     expect(policy.canUseTool(baseCtx(), mockTool, {})).toBe(true);
+  });
+});
+
+describe("ToolDenyListPolicy", () => {
+  it("removes denied tools from filterTools", () => {
+    const policy = new ToolDenyListPolicy(["other"]);
+    const ctx = baseCtx();
+    const filtered = policy.filterTools(ctx, [mockTool, otherTool]);
+    expect(filtered.map((t) => t.name)).toEqual(["test"]);
+  });
+
+  it("denies canUseTool for blocked tool names", () => {
+    const policy = new ToolDenyListPolicy(["other"]);
+    expect(policy.canUseTool(baseCtx(), mockTool, {})).toBe(true);
+    expect(policy.canUseTool(baseCtx(), otherTool, {})).toBe(false);
   });
 });
 

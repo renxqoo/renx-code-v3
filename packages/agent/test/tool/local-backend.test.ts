@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { platform } from "node:process";
 
 import { LocalBackend } from "../../src/tool/local-backend";
 
@@ -30,6 +31,43 @@ describe("LocalBackend", () => {
     it("returns non-zero exit code on failure", async () => {
       const result = await backend.exec("false");
       expect(result.exitCode).not.toBe(0);
+    });
+  });
+
+  /** Mirrors CLI agents: same commands users ask the bash tool to run. */
+  describe("exec() shell parity (platform)", () => {
+    const backend = new LocalBackend();
+
+    describe.skipIf(platform !== "win32")("Windows (PowerShell → cmd)", () => {
+      it("Get-ChildItem exits 0 and prints listing", async () => {
+        const r = await backend.exec("Get-ChildItem");
+        expect(r.exitCode, `stderr=${r.stderr}`).toBe(0);
+        expect(r.stdout.length).toBeGreaterThan(0);
+      });
+
+      it("dir exits 0 and prints listing", async () => {
+        const r = await backend.exec("dir");
+        expect(r.exitCode, `stderr=${r.stderr}`).toBe(0);
+        expect(r.stdout.length).toBeGreaterThan(0);
+      });
+    });
+
+    describe.skipIf(platform === "win32")("Unix (sh -lc)", () => {
+      it("ls exits 0", async () => {
+        const r = await backend.exec("ls");
+        expect(r.exitCode, `stderr=${r.stderr}`).toBe(0);
+      });
+
+      it("pwd exits 0 with absolute path", async () => {
+        const r = await backend.exec("pwd");
+        expect(r.exitCode, `stderr=${r.stderr}`).toBe(0);
+        expect(r.stdout.trim()).toMatch(/^\//);
+      });
+
+      it("Get-ChildItem is not a POSIX command (expect non-zero)", async () => {
+        const r = await backend.exec("Get-ChildItem");
+        expect(r.exitCode).not.toBe(0);
+      });
     });
   });
 

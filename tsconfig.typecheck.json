@@ -11,7 +11,8 @@
       "@renx/agent": ["./packages/agent/src/index.ts"],
       "@renx/model": ["./packages/model/src/index.ts"],
       "@renx/provider": ["./packages/provider/src/index.ts"],
-      "@renx/provider/openai": ["./packages/provider/src/openai/index.ts"]
+      "@renx/provider/openai": ["./packages/provider/src/openai/index.ts"],
+      "@renx/agent-tools": ["./packages/agent-tools/src/index.ts"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "vitest.config.ts"]

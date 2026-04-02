@@ -10,10 +10,16 @@ export default defineConfig({
       "@renx/provider": resolve(__dirname, "packages/provider/src/index.ts"),
       "@renx/toolkit": resolve(__dirname, "packages/toolkit/src/index.ts"),
       "@renx/agent": resolve(__dirname, "packages/agent/src/index.ts"),
+      "@renx/agent-tools": resolve(__dirname, "packages/agent-tools/src/index.ts"),
     },
   },
   test: {
     environment: "node",
     include: ["packages/*/test/**/*.test.ts"],
+    server: {
+      deps: {
+        external: ["web-tree-sitter"],
+      },
+    },
   },
 });

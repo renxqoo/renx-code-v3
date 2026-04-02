@@ -72,6 +72,7 @@ export { ToolExecutor } from "./tool/executor";
 export type { ToolExecutorRunResult, BatchToolResult } from "./tool/executor";
 export { validateToolInput } from "./tool/input-validation";
 export { LocalBackend } from "./tool/local-backend";
+export { execWindowsPreferPowerShell, type WinShellExecFileOptions } from "./tool/win-shell-exec";
 export { DefaultBackendResolver } from "./tool/default-backend-resolver";
 
 // --- Middleware ---
@@ -82,7 +83,7 @@ export { AgentMemoryMiddleware } from "./middleware/agent-memory";
 export type { AgentMemoryOptions } from "./middleware/agent-memory";
 
 // --- Policy ---
-export { AllowAllPolicy } from "./policy";
+export { AllowAllPolicy, ToolDenyListPolicy } from "./policy";
 
 // --- Checkpoint ---
 export { InMemoryCheckpointStore } from "./checkpoint";
@@ -107,4 +108,4 @@ export type {
 } from "./context/types";
 
 // --- Base Class ---
-export { EnterpriseAgentBase } from "./base";
+export { AgentBase } from "./base";

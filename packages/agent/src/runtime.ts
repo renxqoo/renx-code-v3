@@ -33,7 +33,9 @@ import type { ContextManagerConfig, ContextRuntimeState } from "./context/types"
 
 const toToolInputSchema = (schema: AgentTool["schema"]): Record<string, unknown> => {
   try {
-    return zodToJsonSchema(schema, { target: "openAi" }) as Record<string, unknown>;
+    return zodToJsonSchema(schema as unknown as Parameters<typeof zodToJsonSchema>[0], {
+      target: "openAi",
+    }) as Record<string, unknown>;
   } catch {
     return { type: "object", properties: {} };
   }

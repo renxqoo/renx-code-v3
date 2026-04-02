@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import type { ModelClient, ModelResponse } from "@renx/model";
 
-import { EnterpriseAgentBase } from "../src/base";
+import { AgentBase } from "../src/base";
 import { InMemoryCheckpointStore } from "../src/checkpoint";
 import type { AgentTool, RuntimeConfig, ToolResult } from "../src";
 import { buildInput } from "./helpers";
@@ -39,7 +39,7 @@ const echoTool: AgentTool = {
 
 // --- Test Agent ---
 
-class TestAgent extends EnterpriseAgentBase {
+class TestAgent extends AgentBase {
   constructor(
     private readonly client: ModelClient,
     private readonly checkpointStore?: InMemoryCheckpointStore,
@@ -81,7 +81,7 @@ class TestAgent extends EnterpriseAgentBase {
   }
 }
 
-describe("EnterpriseAgentBase", () => {
+describe("AgentBase", () => {
   it("invokes and returns final response", async () => {
     const client = createMockModelClient([{ type: "final", output: "Hello from test agent!" }]);
 

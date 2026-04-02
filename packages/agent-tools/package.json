@@ -1,0 +1,26 @@
+{
+  "name": "@renx/agent-tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "prebuild:wasm": "node scripts/ensure-bash-wasm.mjs",
+    "build": "pnpm run prebuild:wasm && pnpm exec tsup src/index.ts --format esm --sourcemap --clean --out-dir dist --external web-tree-sitter && pnpm exec tsc -p tsconfig.json --emitDeclarationOnly",
+    "clean": "node ../../scripts/clean-package.mjs"
+  },
+  "dependencies": {
+    "@renx/agent": "workspace:*",
+    "shell-quote": "^1.8.1",
+    "tree-sitter-bash": "^0.25.1",
+    "web-tree-sitter": "^0.26.8",
+    "zod": "latest"
+  }
+}
