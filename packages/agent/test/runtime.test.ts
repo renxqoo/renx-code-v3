@@ -523,6 +523,47 @@ describe("AgentRuntime", () => {
     expect(result.output).toBe("Hello! [after]");
   });
 
+  it("afterAssistantFinal can request another reasoning round", async () => {
+    const modelClient = createMockModelClient([
+      { type: "final", output: "premature done" },
+      { type: "final", output: "final verified answer" },
+    ]);
+
+    let guardCalled = 0;
+    const pipeline = new MiddlewarePipeline([
+      {
+        name: "final-guard",
+        afterAssistantFinal: () => {
+          guardCalled += 1;
+          if (guardCalled === 1) {
+            return {
+              continueWithUserMessage: "请继续执行，先完成任务再给最终回答。",
+            };
+          }
+        },
+      },
+    ]);
+
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient,
+        pipeline,
+      }),
+    );
+
+    const result = await runtime.run(baseCtx({ inputText: "do task" }));
+    expect(result.status).toBe("completed");
+    expect(result.output).toBe("final verified answer");
+    expect(
+      result.state.messages.some((m) => m.role === "assistant" && m.content === "premature done"),
+    ).toBe(false);
+    expect(
+      result.state.messages.some(
+        (m) => m.role === "user" && m.content.includes("请继续执行，先完成任务再给最终回答。"),
+      ),
+    ).toBe(true);
+  });
+
   it("Multiple tool calls in single model response", async () => {
     const toolCalls: ToolCall[] = [
       { id: "tc_1", name: "echo", input: { msg: "first" } },

@@ -146,6 +146,32 @@ describe("MiddlewarePipeline", () => {
     expect((result as { output: string }).output).toBe("base [mw1] [mw2]");
   });
 
+  it("runAfterAssistantFinal aggregates continue message and state patches", async () => {
+    const mw1: AgentMiddleware = {
+      name: "mw1",
+      afterAssistantFinal: () => ({
+        statePatch: { mergeMemory: { gate1: true } },
+        continueWithUserMessage: "first follow-up",
+      }),
+    };
+    const mw2: AgentMiddleware = {
+      name: "mw2",
+      afterAssistantFinal: () => ({
+        statePatch: { mergeMemory: { gate2: true } },
+        continueWithUserMessage: "second follow-up",
+      }),
+    };
+
+    const pipeline = new MiddlewarePipeline([mw1, mw2]);
+    const decision = await pipeline.runAfterAssistantFinal(baseCtx(), {
+      type: "final",
+      output: "done",
+    });
+
+    expect(decision.statePatch).toHaveLength(2);
+    expect(decision.continueWithUserMessage).toBe("second follow-up");
+  });
+
   it("runAfterTool aggregates decisions from middleware", async () => {
     const mw1: AgentMiddleware = {
       name: "mw1",

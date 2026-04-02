@@ -14,6 +14,11 @@ export interface AggregatedDecision {
   shouldStop: boolean;
 }
 
+export interface AggregatedAssistantFinalDecision {
+  statePatch: AgentStatePatch[];
+  continueWithUserMessage?: string;
+}
+
 /**
  * Ordered middleware pipeline.
  */
@@ -50,6 +55,32 @@ export class MiddlewarePipeline {
       }
     }
     return current;
+  }
+
+  async runAfterAssistantFinal(
+    ctx: AgentRunContext,
+    resp: Extract<ModelResponse, { type: "final" }>,
+  ): Promise<AggregatedAssistantFinalDecision> {
+    const patches: AgentStatePatch[] = [];
+    let continueWithUserMessage: string | undefined;
+
+    for (const mw of this.middlewares) {
+      if (mw.afterAssistantFinal) {
+        const decision = await mw.afterAssistantFinal(ctx, resp);
+        if (!decision) continue;
+        if (decision.statePatch) {
+          patches.push(decision.statePatch);
+        }
+        if (decision.continueWithUserMessage !== undefined) {
+          continueWithUserMessage = decision.continueWithUserMessage;
+        }
+      }
+    }
+
+    return {
+      statePatch: patches,
+      ...(continueWithUserMessage !== undefined ? { continueWithUserMessage } : {}),
+    };
   }
 
   async runBeforeTool(ctx: AgentRunContext, call: ToolCall): Promise<AggregatedDecision> {

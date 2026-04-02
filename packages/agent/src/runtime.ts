@@ -252,6 +252,17 @@ export class AgentRuntime {
 
         // --- Branch: Final answer ---
         if (modelResponse.type === "final") {
+          const finalDecision = await this.pipeline.runAfterAssistantFinal(ctx, modelResponse);
+          for (const patch of finalDecision.statePatch) {
+            ctx = this.patchState(ctx, patch);
+          }
+          if (finalDecision.continueWithUserMessage) {
+            ctx = this.patchState(ctx, {}, (s) =>
+              this.messageManager.appendUserMessage(s, finalDecision.continueWithUserMessage!),
+            );
+            await this.saveCheckpoint(ctx.state);
+            continue;
+          }
           ctx = this.patchState(ctx, {}, (s) =>
             this.messageManager.appendAssistantMessage(
               s,
@@ -633,6 +644,17 @@ export class AgentRuntime {
 
         // --- Branch: Final answer ---
         if (modelResponse.type === "final") {
+          const finalDecision = await this.pipeline.runAfterAssistantFinal(ctx, modelResponse);
+          for (const patch of finalDecision.statePatch) {
+            ctx = this.patchState(ctx, patch);
+          }
+          if (finalDecision.continueWithUserMessage) {
+            ctx = this.patchState(ctx, {}, (s) =>
+              this.messageManager.appendUserMessage(s, finalDecision.continueWithUserMessage!),
+            );
+            await this.saveCheckpoint(ctx.state);
+            continue;
+          }
           ctx = this.patchState(ctx, {}, (s) =>
             this.messageManager.appendAssistantMessage(
               s,

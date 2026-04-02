@@ -13,6 +13,15 @@ export interface MiddlewareDecision {
 }
 
 /**
+ * Decision returned when the model has produced a final answer.
+ * Middleware may request another reasoning round by injecting a follow-up user message.
+ */
+export interface AssistantFinalDecision {
+  statePatch?: AgentStatePatch;
+  continueWithUserMessage?: string;
+}
+
+/**
  * Agent middleware hooks.
  *
  * Middleware provides cross-cutting capabilities at defined lifecycle points.
@@ -29,6 +38,15 @@ export interface AgentMiddleware {
 
   /** Called after each model call. May modify the response. */
   afterModel?(ctx: AgentRunContext, resp: ModelResponse): Promise<ModelResponse> | ModelResponse;
+
+  /**
+   * Called when model response is `final`, before runtime finalizes the run.
+   * Middleware can request another step by returning `continueWithUserMessage`.
+   */
+  afterAssistantFinal?(
+    ctx: AgentRunContext,
+    resp: Extract<ModelResponse, { type: "final" }>,
+  ): Promise<AssistantFinalDecision | void> | AssistantFinalDecision | void;
 
   /** Called before each tool invocation. May return a decision to stop or patch state. */
   beforeTool?(
