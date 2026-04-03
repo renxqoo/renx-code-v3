@@ -62,7 +62,7 @@ describe("ToolExecutor", () => {
     expect(result.shouldStop).toBe(false);
   });
 
-  it("throws validation error for invalid input", async () => {
+  it("returns validation error payload for invalid input", async () => {
     const registry = new InMemoryToolRegistry();
     registry.register({
       name: "strict-echo",
@@ -76,9 +76,12 @@ describe("ToolExecutor", () => {
     const executor = new ToolExecutor(registry, new MiddlewarePipeline());
     const invalidCall: ToolCall = { id: "tc_invalid", name: "strict-echo", input: { bad: true } };
 
-    await expect(executor.run(invalidCall, baseCtx())).rejects.toThrow(
-      'Invalid input for tool "strict-echo"',
-    );
+    const result = await executor.run(invalidCall, baseCtx());
+    if (result.type !== "completed") {
+      throw new Error("Expected completed result");
+    }
+    expect(result.result.output.metadata?.["errorCode"]).toBe("VALIDATION_ERROR");
+    expect(result.result.output.content).toContain('"ok":false');
   });
 
   it("throws for unknown tool", async () => {
@@ -88,14 +91,19 @@ describe("ToolExecutor", () => {
     await expect(executor.run(call, baseCtx())).rejects.toThrow("Tool not found: echo");
   });
 
-  it("propagates tool execution errors", async () => {
+  it("returns tool execution error payload", async () => {
     const registry = new InMemoryToolRegistry();
     registry.register(failTool);
 
     const executor = new ToolExecutor(registry, new MiddlewarePipeline());
     const failCall: ToolCall = { id: "tc_2", name: "fail", input: {} };
 
-    await expect(executor.run(failCall, baseCtx())).rejects.toThrow("Tool failed");
+    const result = await executor.run(failCall, baseCtx());
+    if (result.type !== "completed") {
+      throw new Error("Expected completed result");
+    }
+    expect(result.result.output.metadata?.["errorCode"]).toBe("TOOL_ERROR");
+    expect(result.result.output.content).toContain("Tool failed");
   });
 
   it("runs middleware onError and emits tool_failed audit on tool error", async () => {
@@ -122,7 +130,8 @@ describe("ToolExecutor", () => {
       },
     };
 
-    await expect(executor.run(failCall, ctx)).rejects.toThrow("Tool failed");
+    const result = await executor.run(failCall, ctx);
+    expect(result.type).toBe("completed");
     expect(onErrorCalled).toBe(true);
     expect(events).toContain("tool_failed");
   });
@@ -371,9 +380,9 @@ describe("ToolExecutor", () => {
         },
       };
 
-      await expect(
-        executor.runBatch([{ id: "tc_1", name: "fail", input: {} }], ctx),
-      ).rejects.toThrow("Tool failed");
+      const results = await executor.runBatch([{ id: "tc_1", name: "fail", input: {} }], ctx);
+      expect(results).toHaveLength(1);
+      expect(results[0]!.result.output.metadata?.["errorCode"]).toBe("TOOL_ERROR");
       expect(onErrorCalled).toBe(true);
       expect(events).toContain("tool_failed");
     });

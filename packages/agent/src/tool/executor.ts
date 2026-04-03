@@ -5,7 +5,13 @@ import { generateId } from "../helpers";
 import type { AgentRunContext, AgentStatePatch } from "../types";
 import type { AuditLogger, AuditEventType } from "../types";
 
-import type { AgentTool, BackendResolver, ToolExecutionResult, ToolRegistry } from "./types";
+import type {
+  AgentTool,
+  BackendResolver,
+  ToolExecutionResult,
+  ToolRegistry,
+  ToolResult,
+} from "./types";
 import { validateToolInput } from "./input-validation";
 
 import type { AggregatedDecision, MiddlewarePipeline } from "../middleware/pipeline";
@@ -124,13 +130,26 @@ export class ToolExecutor {
           await sleep(computeBackoffMs(attempts, this.retryBaseDelayMs, this.retryMaxDelayMs));
           continue;
         }
+        const errorOutput = this.buildErrorToolResult(tool, call, toolError);
+        const executionResult: ToolExecutionResult = {
+          tool,
+          call,
+          output: errorOutput,
+        };
+        const afterDecision = await this.middleware.runAfterTool(ctx, executionResult);
+        const statePatches = [...beforeDecision.statePatch, ...afterDecision.statePatch];
         this.emitAudit(ctx, "tool_failed", {
           toolName: call.name,
           toolCallId: call.id,
           code: toolError.code,
           message: toolError.message,
         });
-        throw toolError;
+        return {
+          type: "completed",
+          result: executionResult,
+          shouldStop: afterDecision.shouldStop,
+          statePatches,
+        };
       }
     }
   }
@@ -217,13 +236,20 @@ export class ToolExecutor {
           await sleep(computeBackoffMs(attempts, this.retryBaseDelayMs, this.retryMaxDelayMs));
           continue;
         }
+        const errorOutput = this.buildErrorToolResult(tool, call, toolError);
+        const executionResult: ToolExecutionResult = { tool, call, output: errorOutput };
+        const afterDecision = await this.middleware.runAfterTool(ctx, executionResult);
         this.emitAudit(ctx, "tool_failed", {
           toolName: call.name,
           toolCallId: call.id,
           code: toolError.code,
           message: toolError.message,
         });
-        throw toolError;
+        return {
+          call,
+          result: executionResult,
+          statePatches: [...beforeDecision.statePatch, ...afterDecision.statePatch],
+        };
       }
     }
   }
@@ -282,6 +308,28 @@ export class ToolExecutor {
     if (!error || typeof error !== "object") return false;
     const retryable = (error as { retryable?: unknown }).retryable;
     return retryable === true;
+  }
+
+  private buildErrorToolResult(tool: AgentTool, call: ToolCall, error: AgentError): ToolResult {
+    const structured = {
+      ok: false,
+      error: {
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+        details: error.metadata,
+      },
+    };
+    return {
+      content: JSON.stringify(structured),
+      structured,
+      metadata: {
+        ok: false,
+        toolName: tool.name,
+        toolCallId: call.id,
+        errorCode: error.code,
+      },
+    };
   }
 }
 

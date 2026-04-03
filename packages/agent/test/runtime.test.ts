@@ -5,10 +5,10 @@ import type { ModelClient, ModelResponse, ToolCall } from "@renx/model";
 
 import { AgentRuntime } from "../src/runtime";
 import { AgentError } from "../src/errors";
-import { InMemoryCheckpointStore } from "../src/checkpoint";
+import { InMemoryTimelineStore } from "../src/timeline";
 import { MiddlewarePipeline } from "../src/middleware/pipeline";
 import type { AgentTool, ToolResult } from "../src/tool/types";
-import type { AgentResult, PolicyEngine } from "../src/types";
+import type { AgentResult, AgentStreamEvent, ApprovalEngine, PolicyEngine } from "../src/types";
 import type { RunMessage } from "../src/message/types";
 import { baseCtx } from "./helpers";
 
@@ -58,7 +58,7 @@ function buildRuntimeConfig(overrides: {
   tools?: AgentTool[];
   systemPrompt?: string;
   maxSteps?: number;
-  checkpoint?: InMemoryCheckpointStore;
+  timeline?: InMemoryTimelineStore;
   pipeline?: MiddlewarePipeline;
   policy?: PolicyEngine;
   audit?: {
@@ -102,7 +102,7 @@ function buildRuntimeConfig(overrides: {
     tools: overrides.tools ?? [],
     systemPrompt: overrides.systemPrompt ?? "You are helpful.",
     maxSteps: overrides.maxSteps ?? 5,
-    ...(overrides.checkpoint ? { checkpoint: overrides.checkpoint } : {}),
+    ...(overrides.timeline ? { timeline: overrides.timeline } : {}),
     ...(overrides.pipeline ? { pipeline: overrides.pipeline } : {}),
     ...(overrides.policy ? { policy: overrides.policy } : {}),
     ...(overrides.audit ? { audit: overrides.audit } : {}),
@@ -319,7 +319,7 @@ describe("AgentRuntime", () => {
     expect(toolCalled).toBe(2);
   });
 
-  it("does not retry non-retryable tool failure", async () => {
+  it("does not retry non-retryable tool failure and returns tool error payload", async () => {
     let toolCalled = 0;
     const hardFailTool: AgentTool = {
       name: "hard-fail",
@@ -348,7 +348,14 @@ describe("AgentRuntime", () => {
     );
 
     const result = await runtime.run(baseCtx({ inputText: "run hard-fail" }));
-    expect(result.status).toBe("failed");
+    expect(result.status).toBe("completed");
+    expect(result.output).toBe("done");
+    expect(
+      result.state.messages.some(
+        (m) =>
+          m.role === "tool" && m.toolCallId === "tc_1" && m.content.includes('"code":"TOOL_ERROR"'),
+      ),
+    ).toBe(true);
     expect(toolCalled).toBe(1);
   });
 
@@ -387,17 +394,66 @@ describe("AgentRuntime", () => {
     expect(afterRunStatus).toBe("failed");
   });
 
-  it("saves checkpoints during run", async () => {
-    const checkpoint = new InMemoryCheckpointStore();
+  it("does not expose output when run fails in finalize phase", async () => {
+    const pipeline = new MiddlewarePipeline([
+      {
+        name: "after-run-crash",
+        afterRun: () => {
+          throw new Error("afterRun crashed");
+        },
+      },
+    ]);
+    const modelClient = createMockModelClient([
+      { type: "final", output: "final but should be hidden" },
+    ]);
+    const runtime = new AgentRuntime(buildRuntimeConfig({ modelClient, pipeline }));
+
+    const result = await runtime.run(baseCtx({ inputText: "Hi" }));
+
+    expect(result.status).toBe("failed");
+    expect(result.output).toBeUndefined();
+  });
+
+  it("does not expose output when stream fails in finalize phase", async () => {
+    const pipeline = new MiddlewarePipeline([
+      {
+        name: "after-run-crash-stream",
+        afterRun: () => {
+          throw new Error("afterRun crashed");
+        },
+      },
+    ]);
+    const modelClient = createMockModelClient([
+      { type: "final", output: "stream final but hidden" },
+    ]);
+    const runtime = new AgentRuntime(buildRuntimeConfig({ modelClient, pipeline }));
+
+    const iter = runtime.stream(baseCtx({ inputText: "Hi stream" }));
+    let done: IteratorResult<AgentStreamEvent, AgentResult> | undefined;
+    while (true) {
+      const next = await iter.next();
+      if (next.done) {
+        done = next;
+        break;
+      }
+    }
+
+    expect(done).toBeDefined();
+    expect(done!.value.status).toBe("failed");
+    expect(done!.value.output).toBeUndefined();
+  });
+
+  it("saves timeline snapshots during run", async () => {
+    const timeline = new InMemoryTimelineStore();
     const modelClient = createMockModelClient([{ type: "final", output: "Done!" }]);
 
-    const runtime = new AgentRuntime(buildRuntimeConfig({ modelClient, checkpoint }));
+    const runtime = new AgentRuntime(buildRuntimeConfig({ modelClient, timeline }));
 
     const ctx = baseCtx({ inputText: "Hi" });
     const result = await runtime.run(ctx);
 
     expect(result.status).toBe("completed");
-    const record = await checkpoint.load(result.runId);
+    const record = await timeline.load(result.runId);
     expect(record).toBeDefined();
     expect(record!.state.status).toBe("completed");
   });
@@ -465,7 +521,628 @@ describe("AgentRuntime", () => {
     expect(result.error!.code).toBe("POLICY_DENIED");
   });
 
-  it("TOOL_NOT_FOUND error for unknown tool", async () => {
+  it("executes pending tool after approval and resume", async () => {
+    let toolCalled = 0;
+    const approvalRequests: string[] = [];
+    const approvalDecisions = new Map<string, "pending" | "approved" | "rejected" | "expired">();
+    const approvalEngine: ApprovalEngine = {
+      evaluate: (_ctx, tool) => ({
+        required: tool.name === "gated",
+        reason: 'tool "gated" needs approval',
+      }),
+      request: async (_ctx, ticket) => {
+        approvalRequests.push(ticket.id);
+        approvalDecisions.set(ticket.id, "pending");
+      },
+      getDecision: async (_ctx, ticketId) => {
+        const status = approvalDecisions.get(ticketId);
+        if (!status) return null;
+        return {
+          ticketId,
+          status,
+          reviewerId: status === "approved" ? "reviewer-1" : "reviewer-x",
+          decidedAt: new Date().toISOString(),
+        };
+      },
+    };
+    const gatedTool: AgentTool = {
+      name: "gated",
+      description: "requires approval",
+      schema: z.object({}).passthrough(),
+      invoke: async (): Promise<ToolResult> => {
+        toolCalled += 1;
+        return { content: "approved tool output" };
+      },
+    };
+    const policy: PolicyEngine = {
+      filterTools: (_ctx, tools) => tools,
+      canUseTool: () => true,
+    };
+    const timeline = new InMemoryTimelineStore();
+    const modelClient = createMockModelClient([
+      {
+        type: "tool_calls",
+        toolCalls: [{ id: "tc_approval_1", name: "gated", input: { op: "run" } }],
+      },
+      { type: "final", output: "completed after approval" },
+    ]);
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient,
+        tools: [gatedTool],
+        policy,
+        timeline,
+      }),
+    );
+
+    const firstCtx = baseCtx({ inputText: "run gated" });
+    firstCtx.services.approvalEngine = approvalEngine;
+    const first = await runtime.run(firstCtx);
+    expect(first.status).toBe("waiting_approval");
+    expect(toolCalled).toBe(0);
+    expect(approvalRequests.length).toBe(1);
+
+    const ticketId = approvalRequests[0]!;
+    approvalDecisions.set(ticketId, "approved");
+
+    const record = await timeline.load(first.runId);
+    expect(record).toBeDefined();
+    const resumed = await runtime.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...record!.state, status: "running" },
+      services: { approvalEngine },
+      metadata: {},
+    });
+
+    expect(resumed.status).toBe("completed");
+    expect(resumed.output).toBe("completed after approval");
+    expect(toolCalled).toBe(1);
+    expect(
+      resumed.state.messages.some((m) => m.role === "tool" && m.toolCallId === "tc_approval_1"),
+    ).toBe(true);
+  });
+
+  it("fails resume when pending approval is rejected", async () => {
+    let toolCalled = 0;
+    const approvalRequests: string[] = [];
+    const approvalDecisions = new Map<string, "pending" | "approved" | "rejected" | "expired">();
+    const approvalEngine: ApprovalEngine = {
+      evaluate: () => ({ required: true }),
+      request: async (_ctx, ticket) => {
+        approvalRequests.push(ticket.id);
+        approvalDecisions.set(ticket.id, "pending");
+      },
+      getDecision: async (_ctx, ticketId) => {
+        const status = approvalDecisions.get(ticketId);
+        if (!status) return null;
+        return {
+          ticketId,
+          status,
+          reviewerId: "reviewer-2",
+          decidedAt: new Date().toISOString(),
+        };
+      },
+    };
+    const gatedTool: AgentTool = {
+      name: "gated",
+      description: "requires approval",
+      schema: z.object({}).passthrough(),
+      invoke: async (): Promise<ToolResult> => {
+        toolCalled += 1;
+        return { content: "should not run" };
+      },
+    };
+    const policy: PolicyEngine = {
+      filterTools: (_ctx, tools) => tools,
+      canUseTool: () => true,
+    };
+    const timeline = new InMemoryTimelineStore();
+    const modelClient = createMockModelClient([
+      {
+        type: "tool_calls",
+        toolCalls: [{ id: "tc_approval_2", name: "gated", input: { op: "run" } }],
+      },
+    ]);
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient,
+        tools: [gatedTool],
+        policy,
+        timeline,
+      }),
+    );
+
+    const firstCtx = baseCtx({ inputText: "run gated" });
+    firstCtx.services.approvalEngine = approvalEngine;
+    const first = await runtime.run(firstCtx);
+    expect(first.status).toBe("waiting_approval");
+    expect(toolCalled).toBe(0);
+    expect(approvalRequests.length).toBe(1);
+
+    const ticketId = approvalRequests[0]!;
+    approvalDecisions.set(ticketId, "rejected");
+
+    const record = await timeline.load(first.runId);
+    expect(record).toBeDefined();
+    const resumed = await runtime.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...record!.state, status: "running" },
+      services: { approvalEngine },
+      metadata: {},
+    });
+
+    expect(resumed.status).toBe("failed");
+    expect(resumed.error?.code).toBe("APPROVAL_REQUIRED");
+    expect(toolCalled).toBe(0);
+  });
+
+  it("fails with APPROVAL_REQUIRED when pending ticket is expired", async () => {
+    let toolCalled = 0;
+    const approvalRequests: string[] = [];
+    const approvalEngine: ApprovalEngine = {
+      evaluate: () => ({
+        required: true,
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      }),
+      request: async (_ctx, ticket) => {
+        approvalRequests.push(ticket.id);
+      },
+      getDecision: async () => null,
+    };
+    const gatedTool: AgentTool = {
+      name: "gated",
+      description: "requires approval",
+      schema: z.object({}).passthrough(),
+      invoke: async (): Promise<ToolResult> => {
+        toolCalled += 1;
+        return { content: "should not run" };
+      },
+    };
+    const policy: PolicyEngine = {
+      filterTools: (_ctx, tools) => tools,
+      canUseTool: () => true,
+    };
+    const timeline = new InMemoryTimelineStore();
+    const modelClient = createMockModelClient([
+      {
+        type: "tool_calls",
+        toolCalls: [{ id: "tc_approval_expired", name: "gated", input: { op: "run" } }],
+      },
+    ]);
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient,
+        tools: [gatedTool],
+        policy,
+        timeline,
+      }),
+    );
+
+    const firstCtx = baseCtx({ inputText: "run gated" });
+    firstCtx.services.approvalEngine = approvalEngine;
+    const first = await runtime.run(firstCtx);
+    expect(first.status).toBe("waiting_approval");
+    expect(approvalRequests.length).toBe(1);
+
+    const record = await timeline.load(first.runId);
+    expect(record).toBeDefined();
+    const resumed = await runtime.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...record!.state, status: "running" },
+      services: { approvalEngine },
+      metadata: {},
+    });
+
+    expect(resumed.status).toBe("failed");
+    expect(resumed.error?.code).toBe("APPROVAL_REQUIRED");
+    expect(toolCalled).toBe(0);
+    expect(String(resumed.error?.metadata?.["status"] ?? "")).toBe("expired");
+  });
+
+  it("fails with SYSTEM_ERROR when pending approval resumes without ApprovalEngine", async () => {
+    const approvalEngine: ApprovalEngine = {
+      evaluate: () => ({ required: true }),
+      request: async () => {},
+      getDecision: async () => null,
+    };
+    const gatedTool: AgentTool = {
+      name: "gated",
+      description: "requires approval",
+      schema: z.object({}).passthrough(),
+      invoke: async (): Promise<ToolResult> => ({ content: "n/a" }),
+    };
+    const timeline = new InMemoryTimelineStore();
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient: createMockModelClient([
+          { type: "tool_calls", toolCalls: [{ id: "tc_no_engine", name: "gated", input: {} }] },
+        ]),
+        tools: [gatedTool],
+        policy: {
+          filterTools: (_ctx, tools) => tools,
+          canUseTool: () => true,
+        },
+        timeline,
+      }),
+    );
+    const firstCtx = baseCtx({ inputText: "run" });
+    firstCtx.services.approvalEngine = approvalEngine;
+    const first = await runtime.run(firstCtx);
+    expect(first.status).toBe("waiting_approval");
+
+    const record = await timeline.load(first.runId);
+    expect(record).toBeDefined();
+    const resumed = await runtime.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...record!.state, status: "running" },
+      services: {},
+      metadata: {},
+    });
+    expect(resumed.status).toBe("failed");
+    expect(resumed.error?.code).toBe("SYSTEM_ERROR");
+  });
+
+  it("fails with SYSTEM_ERROR when approval decision ticket mismatches", async () => {
+    const approvalRequests: string[] = [];
+    const approvalEngine: ApprovalEngine = {
+      evaluate: () => ({ required: true }),
+      request: async (_ctx, ticket) => {
+        approvalRequests.push(ticket.id);
+      },
+      getDecision: async () => ({
+        ticketId: "ticket_other",
+        status: "approved",
+        reviewerId: "reviewer-x",
+      }),
+    };
+    const gatedTool: AgentTool = {
+      name: "gated",
+      description: "requires approval",
+      schema: z.object({}).passthrough(),
+      invoke: async (): Promise<ToolResult> => ({ content: "n/a" }),
+    };
+    const timeline = new InMemoryTimelineStore();
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient: createMockModelClient([
+          { type: "tool_calls", toolCalls: [{ id: "tc_mismatch", name: "gated", input: {} }] },
+        ]),
+        tools: [gatedTool],
+        policy: {
+          filterTools: (_ctx, tools) => tools,
+          canUseTool: () => true,
+        },
+        timeline,
+      }),
+    );
+    const firstCtx = baseCtx({ inputText: "run" });
+    firstCtx.services.approvalEngine = approvalEngine;
+    const first = await runtime.run(firstCtx);
+    expect(first.status).toBe("waiting_approval");
+    expect(approvalRequests.length).toBe(1);
+
+    const record = await timeline.load(first.runId);
+    expect(record).toBeDefined();
+    const resumed = await runtime.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...record!.state, status: "running" },
+      services: { approvalEngine },
+      metadata: {},
+    });
+    expect(resumed.status).toBe("failed");
+    expect(resumed.error?.code).toBe("SYSTEM_ERROR");
+  });
+
+  it("does not execute approved pending ticket twice when resumed from stale snapshot", async () => {
+    let toolCalled = 0;
+    const approvalRequests: string[] = [];
+    const approvalDecisions = new Map<string, "pending" | "approved" | "rejected" | "expired">();
+    const approvalEngine: ApprovalEngine = {
+      evaluate: () => ({ required: true }),
+      request: async (_ctx, ticket) => {
+        approvalRequests.push(ticket.id);
+        approvalDecisions.set(ticket.id, "pending");
+      },
+      getDecision: async (_ctx, ticketId) => {
+        const status = approvalDecisions.get(ticketId);
+        if (!status) return null;
+        return {
+          ticketId,
+          status,
+          reviewerId: "reviewer-1",
+          decidedAt: new Date().toISOString(),
+        };
+      },
+    };
+    const gatedTool: AgentTool = {
+      name: "gated",
+      description: "requires approval",
+      schema: z.object({}).passthrough(),
+      invoke: async (): Promise<ToolResult> => {
+        toolCalled += 1;
+        return { content: "tool-ran" };
+      },
+    };
+    const timeline = new InMemoryTimelineStore();
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient: createMockModelClient([
+          {
+            type: "tool_calls",
+            toolCalls: [{ id: "tc_stale_1", name: "gated", input: { op: "run" } }],
+          },
+          { type: "final", output: "after-first-resume" },
+          { type: "final", output: "after-second-resume" },
+        ]),
+        tools: [gatedTool],
+        policy: {
+          filterTools: (_ctx, tools) => tools,
+          canUseTool: () => true,
+        },
+        timeline,
+      }),
+    );
+
+    const firstCtx = baseCtx({ inputText: "run" });
+    firstCtx.services.approvalEngine = approvalEngine;
+    const first = await runtime.run(firstCtx);
+    expect(first.status).toBe("waiting_approval");
+    const ticketId = approvalRequests[0]!;
+    approvalDecisions.set(ticketId, "approved");
+
+    const record = await timeline.load(first.runId);
+    expect(record).toBeDefined();
+    const staleState = { ...record!.state, status: "running" as const };
+
+    const resumed1 = await runtime.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...staleState },
+      services: { approvalEngine },
+      metadata: {},
+    });
+    const resumed2 = await runtime.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...staleState },
+      services: { approvalEngine },
+      metadata: {},
+    });
+
+    expect(resumed1.status).toBe("completed");
+    expect(resumed2.status).toBe("completed");
+    expect(toolCalled).toBe(1);
+  });
+
+  it("does not execute approved pending ticket twice across runtime instances", async () => {
+    let toolCalled = 0;
+    const approvalRequests: string[] = [];
+    const approvalDecisions = new Map<string, "pending" | "approved" | "rejected" | "expired">();
+    const approvalEngine: ApprovalEngine = {
+      evaluate: () => ({ required: true }),
+      request: async (_ctx, ticket) => {
+        approvalRequests.push(ticket.id);
+        approvalDecisions.set(ticket.id, "pending");
+      },
+      getDecision: async (_ctx, ticketId) => {
+        const status = approvalDecisions.get(ticketId);
+        if (!status) return null;
+        return {
+          ticketId,
+          status,
+          reviewerId: "reviewer-1",
+          decidedAt: new Date().toISOString(),
+        };
+      },
+    };
+    const gatedTool: AgentTool = {
+      name: "gated",
+      description: "requires approval",
+      schema: z.object({}).passthrough(),
+      invoke: async (): Promise<ToolResult> => {
+        toolCalled += 1;
+        return { content: "tool-ran" };
+      },
+    };
+    const timeline = new InMemoryTimelineStore();
+    const runtime1 = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient: createMockModelClient([
+          {
+            type: "tool_calls",
+            toolCalls: [{ id: "tc_cross_1", name: "gated", input: { op: "run" } }],
+          },
+          { type: "final", output: "runtime1 done" },
+        ]),
+        tools: [gatedTool],
+        policy: {
+          filterTools: (_ctx, tools) => tools,
+          canUseTool: () => true,
+        },
+        timeline,
+      }),
+    );
+    const runtime2 = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient: createMockModelClient([{ type: "final", output: "runtime2 done" }]),
+        tools: [gatedTool],
+        policy: {
+          filterTools: (_ctx, tools) => tools,
+          canUseTool: () => true,
+        },
+        timeline,
+      }),
+    );
+
+    const firstCtx = baseCtx({ inputText: "run" });
+    firstCtx.services.approvalEngine = approvalEngine;
+    const first = await runtime1.run(firstCtx);
+    expect(first.status).toBe("waiting_approval");
+    const ticketId = approvalRequests[0]!;
+    approvalDecisions.set(ticketId, "approved");
+
+    const record = await timeline.load(first.runId);
+    expect(record).toBeDefined();
+    const staleState = { ...record!.state, status: "running" as const };
+
+    const resumed1 = await runtime1.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...staleState },
+      services: { approvalEngine },
+      metadata: {},
+    });
+    const afterFirstResumeRecord = await timeline.load(first.runId);
+    expect(afterFirstResumeRecord).toBeDefined();
+    const handledMap = afterFirstResumeRecord!.state.scratchpad["__handledApprovalTickets"] as
+      | Record<string, unknown>
+      | undefined;
+    expect(handledMap?.[ticketId]).toBe(true);
+    const resumed2 = await runtime2.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...staleState },
+      services: { approvalEngine },
+      metadata: {},
+    });
+
+    expect(resumed1.status).toBe("completed");
+    expect(resumed2.status).toBe("completed");
+    expect(toolCalled).toBe(1);
+  });
+
+  it("does not execute approved pending ticket twice with concurrent resumes", async () => {
+    let toolCalled = 0;
+    let releaseTool: (() => void) | undefined;
+    const toolGate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const approvalRequests: string[] = [];
+    const approvalDecisions = new Map<string, "pending" | "approved" | "rejected" | "expired">();
+    const approvalEngine: ApprovalEngine = {
+      evaluate: () => ({ required: true }),
+      request: async (_ctx, ticket) => {
+        approvalRequests.push(ticket.id);
+        approvalDecisions.set(ticket.id, "pending");
+      },
+      getDecision: async (_ctx, ticketId) => {
+        const status = approvalDecisions.get(ticketId);
+        if (!status) return null;
+        return {
+          ticketId,
+          status,
+          reviewerId: "reviewer-concurrent",
+          decidedAt: new Date().toISOString(),
+        };
+      },
+    };
+    const gatedTool: AgentTool = {
+      name: "gated",
+      description: "requires approval",
+      schema: z.object({}).passthrough(),
+      invoke: async (): Promise<ToolResult> => {
+        toolCalled += 1;
+        await toolGate;
+        return { content: "tool-ran" };
+      },
+    };
+    const timeline = new InMemoryTimelineStore();
+    const runtime1 = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient: createMockModelClient([{ type: "final", output: "runtime1 done" }]),
+        tools: [gatedTool],
+        policy: {
+          filterTools: (_ctx, tools) => tools,
+          canUseTool: () => true,
+        },
+        timeline,
+      }),
+    );
+    const runtime2 = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient: createMockModelClient([{ type: "final", output: "runtime2 done" }]),
+        tools: [gatedTool],
+        policy: {
+          filterTools: (_ctx, tools) => tools,
+          canUseTool: () => true,
+        },
+        timeline,
+      }),
+    );
+
+    const initialRuntime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient: createMockModelClient([
+          {
+            type: "tool_calls",
+            toolCalls: [{ id: "tc_concurrent_1", name: "gated", input: { op: "run" } }],
+          },
+        ]),
+        tools: [gatedTool],
+        policy: {
+          filterTools: (_ctx, tools) => tools,
+          canUseTool: () => true,
+        },
+        timeline,
+      }),
+    );
+
+    const firstCtx = baseCtx({ inputText: "run" });
+    firstCtx.services.approvalEngine = approvalEngine;
+    const first = await initialRuntime.run(firstCtx);
+    expect(first.status).toBe("waiting_approval");
+    const ticketId = approvalRequests[0]!;
+    approvalDecisions.set(ticketId, "approved");
+
+    const record = await timeline.load(first.runId);
+    expect(record).toBeDefined();
+    const staleState = { ...record!.state, status: "running" as const };
+
+    const p1 = runtime1.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...staleState },
+      services: { approvalEngine },
+      metadata: {},
+    });
+    const p2 = runtime2.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...staleState },
+      services: { approvalEngine },
+      metadata: {},
+    });
+
+    await Promise.resolve();
+    releaseTool?.();
+    const [resumed1, resumed2] = await Promise.all([p1, p2]);
+
+    const statuses = [resumed1.status, resumed2.status].sort();
+    expect(statuses.every((status) => ["completed", "waiting_approval"].includes(status))).toBe(
+      true,
+    );
+    expect(statuses.includes("completed")).toBe(true);
+    expect(toolCalled).toBe(1);
+
+    const latest = await timeline.load(first.runId);
+    expect(latest).toBeDefined();
+    const resumedFinal = await runtime1.run({
+      input: {},
+      identity: firstCtx.identity,
+      state: { ...latest!.state, status: "running" },
+      services: { approvalEngine },
+      metadata: {},
+    });
+    expect(resumedFinal.status).toBe("completed");
+    expect(toolCalled).toBe(1);
+  });
+
+  it("continues run and returns tool error payload for unknown tool", async () => {
     const modelClient = createMockModelClient([
       {
         type: "tool_calls",
@@ -483,9 +1160,12 @@ describe("AgentRuntime", () => {
     const ctx = baseCtx({ inputText: "Use missing tool" });
     const result = await runtime.run(ctx);
 
-    expect(result.status).toBe("failed");
-    expect(result.error).toBeDefined();
-    expect(result.error!.code).toBe("TOOL_NOT_FOUND");
+    expect(result.status).toBe("completed");
+    expect(result.error).toBeUndefined();
+    expect(result.output).toBe("done");
+    const toolMsg = result.state.messages.find((m) => m.role === "tool" && m.toolCallId === "tc_1");
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg?.content).toContain('"code":"TOOL_NOT_FOUND"');
   });
 
   it("Middleware lifecycle: beforeModel modifies request, afterModel modifies response", async () => {
@@ -591,7 +1271,7 @@ describe("AgentRuntime", () => {
     expect(result.state.messages.length).toBeGreaterThanOrEqual(4);
   });
 
-  it("Tool execution failure results in failed run", async () => {
+  it("Tool execution failure returns tool error payload and continues", async () => {
     const failTool: AgentTool = {
       name: "fail",
       description: "Always fails",
@@ -618,9 +1298,16 @@ describe("AgentRuntime", () => {
     const ctx = baseCtx({ inputText: "Run failing tool" });
     const result = await runtime.run(ctx);
 
-    expect(result.status).toBe("failed");
-    expect(result.error).toBeDefined();
-    expect(result.error!.message).toContain("Tool execution exploded");
+    expect(result.status).toBe("completed");
+    expect(result.output).toBe("done");
+    expect(
+      result.state.messages.some(
+        (m) =>
+          m.role === "tool" &&
+          m.toolCallId === "tc_1" &&
+          m.content.includes("Tool execution exploded"),
+      ),
+    ).toBe(true);
   });
 
   it("Empty input (no inputText, no messages) still works", async () => {
@@ -1075,6 +1762,7 @@ describe("AgentRuntime", () => {
       const modelClient: ModelClient = {
         generate: async () => ({ type: "final", output: "unused" }),
         stream: async function* () {
+          yield { type: "done" as const };
           throw new Error("stream crash");
         },
         resolve: () => ({
