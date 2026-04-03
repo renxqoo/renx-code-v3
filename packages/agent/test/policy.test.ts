@@ -71,17 +71,6 @@ describe("Custom PolicyEngine implementations", () => {
     expect(canUse).toBe(false);
   });
 
-  it("custom policy with needApproval returning true", async () => {
-    const policy: PolicyEngine = {
-      filterTools: (_ctx, tools) => tools,
-      canUseTool: () => true,
-      needApproval: () => true,
-    };
-
-    const needsApproval = await policy.needApproval!(baseCtx(), mockTool, {});
-    expect(needsApproval).toBe(true);
-  });
-
   it("custom policy with redactOutput", async () => {
     const policy: PolicyEngine = {
       filterTools: (_ctx, tools) => tools,

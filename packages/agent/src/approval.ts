@@ -1,1 +1,7 @@
-export type { ApprovalRequest, ApprovalDecision, ApprovalService } from "./types";
+export type {
+  ApprovalTicket,
+  ApprovalDecisionStatus,
+  ApprovalDecision,
+  ApprovalEvaluation,
+  ApprovalEngine,
+} from "./types";

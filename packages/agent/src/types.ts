@@ -72,19 +72,23 @@ export interface AgentInput {
 
 // --- Service Interfaces ---
 
-export interface CheckpointStore {
-  load(runId: string): Promise<CheckpointRecord | null>;
-  save(record: CheckpointRecord): Promise<void>;
+export interface TimelineStore {
+  load(runId: string): Promise<TimelineNode | null>;
+  loadNode(runId: string, nodeId: string): Promise<TimelineNode | null>;
+  listNodes(runId: string): Promise<TimelineNode[]>;
+  save(node: TimelineNode, expectedVersion?: number): Promise<number>;
   delete?(runId: string): Promise<void>;
+}
+
+export type ResumeAtMode = "fork" | "fast_forward" | "read_only_preview";
+
+export interface ResumeAtOptions {
+  mode?: ResumeAtMode;
+  allowIrreversibleTools?: boolean;
 }
 
 export interface AuditLogger {
   log(event: AuditEvent): Promise<void> | void;
-}
-
-export interface ApprovalService {
-  create(request: ApprovalRequest): Promise<void>;
-  get(requestId: string): Promise<ApprovalDecision | null>;
 }
 
 /** Generic store interface for any persisted data. */
@@ -96,15 +100,17 @@ export interface Store<T = Metadata> {
 export interface PolicyEngine {
   filterTools(ctx: AgentRunContext, tools: AgentTool[]): Promise<AgentTool[]> | AgentTool[];
   canUseTool(ctx: AgentRunContext, tool: AgentTool, input: unknown): Promise<boolean> | boolean;
-  needApproval?(ctx: AgentRunContext, tool: AgentTool, input: unknown): Promise<boolean> | boolean;
   redactOutput?(ctx: AgentRunContext, output: string): Promise<string> | string;
 }
 
-// --- Checkpoint ---
+// --- Timeline ---
 
-export interface CheckpointRecord {
+export interface TimelineNode {
+  nodeId: string;
+  parentNodeId?: string;
   runId: string;
   state: AgentState;
+  version: number;
   metadata?: Metadata;
   createdAt: string;
   updatedAt: string;
@@ -142,21 +148,45 @@ export interface AuditEvent {
 
 // --- Approval ---
 
-export interface ApprovalRequest {
+export interface ApprovalTicket {
   id: string;
   runId: string;
   toolName: string;
   input: unknown;
-  reason: string;
-  createdAt: string;
+  requestedAt: string;
+  reason?: string;
+  expiresAt?: string;
+  metadata?: Metadata;
 }
 
+export type ApprovalDecisionStatus = "pending" | "approved" | "rejected" | "expired";
+
 export interface ApprovalDecision {
-  requestId: string;
-  approved: boolean;
-  reviewerId: string;
+  ticketId: string;
+  status: ApprovalDecisionStatus;
+  reviewerId?: string;
   comment?: string;
-  decidedAt: string;
+  decidedAt?: string;
+}
+
+export interface ApprovalEvaluation {
+  required: boolean;
+  reason?: string;
+  expiresAt?: string;
+  metadata?: Metadata;
+}
+
+export interface ApprovalEngine {
+  evaluate(
+    ctx: AgentRunContext,
+    tool: AgentTool,
+    input: unknown,
+  ): Promise<ApprovalEvaluation> | ApprovalEvaluation;
+  request(ctx: AgentRunContext, ticket: ApprovalTicket): Promise<void> | void;
+  getDecision(
+    ctx: AgentRunContext,
+    ticketId: string,
+  ): Promise<ApprovalDecision | null> | ApprovalDecision | null;
 }
 
 // --- Recovery ---
@@ -169,9 +199,9 @@ export interface RecoveryConfig {
 // --- Run Context ---
 
 export interface AgentServices {
-  checkpoint?: CheckpointStore;
+  timeline?: TimelineStore;
   audit?: AuditLogger;
-  approval?: ApprovalService;
+  approvalEngine?: ApprovalEngine;
   recovery?: RecoveryConfig;
 }
 

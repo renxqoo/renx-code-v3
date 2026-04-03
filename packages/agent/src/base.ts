@@ -7,6 +7,7 @@ import { AgentMemoryMiddleware } from "./middleware/agent-memory";
 import type { AgentMiddleware } from "./middleware/types";
 import { AllowAllPolicy } from "./policy";
 import { initialContextRuntimeState } from "./context";
+import { buildResumeAtPlan, type ResumeAtRuntimeOptions } from "./timeline";
 import type {
   AgentIdentity,
   AgentInput,
@@ -15,9 +16,10 @@ import type {
   AgentServices,
   AgentState,
   AgentStreamEvent,
-  CheckpointStore,
+  TimelineStore,
   AuditLogger,
-  ApprovalService,
+  ApprovalEngine,
+  ResumeAtOptions,
   Store,
   PolicyEngine,
 } from "./types";
@@ -68,7 +70,7 @@ export abstract class AgentBase {
     return 12;
   }
 
-  protected getCheckpointStore(): CheckpointStore | undefined {
+  protected getTimelineStore(): TimelineStore | undefined {
     return undefined;
   }
 
@@ -76,7 +78,7 @@ export abstract class AgentBase {
     return undefined;
   }
 
-  protected getApprovalService(): ApprovalService | undefined {
+  protected getApprovalEngine(): ApprovalEngine | undefined {
     return undefined;
   }
 
@@ -126,21 +128,48 @@ export abstract class AgentBase {
   }
 
   /**
-   * Resume a previously interrupted run from its checkpoint.
+   * Resume a previously interrupted run from its latest timeline snapshot.
    */
-  async resume(runId: string, payload?: Record<string, unknown>): Promise<AgentResult> {
-    const checkpoint = this.getCheckpointStore();
-    if (!checkpoint) {
-      throw new Error("CheckpointStore is required for resume");
+  async resume(runId: string): Promise<AgentResult> {
+    const timeline = this.getTimelineStore();
+    if (!timeline) {
+      throw new Error("TimelineStore is required for resume");
     }
 
-    const record = await checkpoint.load(runId);
+    const record = await timeline.load(runId);
     if (!record) {
-      throw new Error(`Checkpoint not found: ${runId}`);
+      throw new Error(`Timeline snapshot not found: ${runId}`);
     }
 
-    const ctx = await this.createResumeContext(record, payload);
+    const ctx = await this.createResumeContext(record);
     const runtime = await this.createRuntime(ctx);
+    return runtime.run(ctx);
+  }
+
+  /**
+   * Resume from an arbitrary historical timeline node.
+   */
+  async resumeAt(runId: string, nodeId: string, options?: ResumeAtOptions): Promise<AgentResult> {
+    const timeline = this.getTimelineStore();
+    if (!timeline) {
+      throw new Error("TimelineStore is required for resumeAt");
+    }
+
+    const node = await timeline.loadNode(runId, nodeId);
+    if (!node) {
+      throw new Error(`Timeline node not found: ${runId}/${nodeId}`);
+    }
+
+    const ctx = await this.createResumeContext(node);
+    const plan = await buildResumeAtPlan({
+      timeline,
+      runId,
+      targetNodeId: nodeId,
+      basePolicy: this.getPolicy(),
+      ...(options ? { options } : {}),
+    });
+    const runtimeOverrides = this.toRuntimeOverrideConfig(plan.runtime);
+    const runtime = await this.createRuntime(ctx, runtimeOverrides);
     return runtime.run(ctx);
   }
 
@@ -171,15 +200,12 @@ export abstract class AgentBase {
     };
   }
 
-  protected async createResumeContext(
-    record: { runId: string; state: AgentState },
-    payload?: Record<string, unknown>,
-  ): Promise<AgentRunContext> {
-    const input: AgentInput = {};
-    if (payload) input.metadata = payload;
-
+  protected async createResumeContext(record: {
+    runId: string;
+    state: AgentState;
+  }): Promise<AgentRunContext> {
     return {
-      input,
+      input: {},
       identity: this.getIdentity(),
       state: {
         ...record.state,
@@ -187,22 +213,25 @@ export abstract class AgentBase {
         status: "running",
       },
       services: this.buildServices(),
-      metadata: payload ?? {},
+      metadata: {},
     };
   }
 
   private buildServices(): AgentServices {
     const services: AgentServices = {};
-    const checkpoint = this.getCheckpointStore();
-    if (checkpoint) services.checkpoint = checkpoint;
+    const timeline = this.getTimelineStore();
+    if (timeline) services.timeline = timeline;
     const audit = this.getAuditLogger();
     if (audit) services.audit = audit;
-    const approval = this.getApprovalService();
-    if (approval) services.approval = approval;
+    const approvalEngine = this.getApprovalEngine();
+    if (approvalEngine) services.approvalEngine = approvalEngine;
     return services;
   }
 
-  protected async createRuntime(ctx: AgentRunContext): Promise<AgentRuntime> {
+  protected async createRuntime(
+    ctx: AgentRunContext,
+    overrides?: ResumeAtRuntimeOptions,
+  ): Promise<AgentRuntime> {
     const middlewares = this.getMiddlewares();
 
     // Auto-register memory middleware
@@ -213,7 +242,13 @@ export abstract class AgentBase {
 
     const pipeline = new MiddlewarePipeline(middlewares);
 
-    const checkpoint = this.getCheckpointStore();
+    const hasTimelineOverride =
+      overrides !== undefined && Object.prototype.hasOwnProperty.call(overrides, "timeline");
+    const timeline = overrides?.disableTimeline
+      ? undefined
+      : hasTimelineOverride
+        ? overrides.timeline
+        : this.getTimelineStore();
     const audit = this.getAuditLogger();
     const backendResolver = this.getBackendResolver();
     const context = this.getContextConfig();
@@ -225,8 +260,12 @@ export abstract class AgentBase {
       model: this.getModelName(),
       tools: await this.getTools(ctx),
       pipeline,
-      policy: this.getPolicy(),
-      ...(checkpoint ? { checkpoint } : {}),
+      policy: overrides?.policy ?? this.getPolicy(),
+      ...(timeline ? { timeline } : {}),
+      ...(overrides?.timelineMode ? { timelineMode: overrides.timelineMode } : {}),
+      ...(overrides?.timelineParentNodeId
+        ? { timelineParentNodeId: overrides.timelineParentNodeId }
+        : {}),
       ...(audit ? { audit } : {}),
       systemPrompt: await this.getSystemPrompt(ctx),
       maxSteps: this.getMaxSteps(),
@@ -236,5 +275,17 @@ export abstract class AgentBase {
     };
 
     return new AgentRuntime(config);
+  }
+
+  private toRuntimeOverrideConfig(overrides: ResumeAtRuntimeOptions): ResumeAtRuntimeOptions {
+    return {
+      ...(overrides.timeline ? { timeline: overrides.timeline } : {}),
+      ...(overrides.policy ? { policy: overrides.policy } : {}),
+      ...(overrides.timelineMode ? { timelineMode: overrides.timelineMode } : {}),
+      ...(overrides.timelineParentNodeId
+        ? { timelineParentNodeId: overrides.timelineParentNodeId }
+        : {}),
+      ...(overrides.disableTimeline ? { disableTimeline: true } : {}),
+    };
   }
 }

@@ -20,11 +20,15 @@ export type {
   AuditEventType,
   AuditEvent,
   AuditLogger,
-  CheckpointRecord,
-  CheckpointStore,
-  ApprovalRequest,
+  TimelineNode,
+  TimelineStore,
+  ResumeAtMode,
+  ResumeAtOptions,
+  ApprovalTicket,
   ApprovalDecision,
-  ApprovalService,
+  ApprovalDecisionStatus,
+  ApprovalEvaluation,
+  ApprovalEngine,
   Store,
   RecoveryConfig,
 } from "./types";
@@ -85,8 +89,8 @@ export type { AgentMemoryOptions } from "./middleware/agent-memory";
 // --- Policy ---
 export { AllowAllPolicy, ToolDenyListPolicy } from "./policy";
 
-// --- Checkpoint ---
-export { InMemoryCheckpointStore } from "./checkpoint";
+// --- Timeline ---
+export { InMemoryTimelineStore, TimelineVersionConflictError, TimelineManager } from "./timeline";
 
 // --- Audit ---
 export { ConsoleAuditLogger } from "./audit";

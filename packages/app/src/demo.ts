@@ -3,7 +3,7 @@
  *
  * 4 个递进式场景，覆盖 SDK 所有核心能力：
  *  Demo 1 — 基础天气助手（AgentBase + invoke）
- *  Demo 2 — 流式金融助手（stream + 中间件 + 策略 + 审计 + Checkpoint）
+ *  Demo 2 — 流式金融助手（stream + 中间件 + 策略 + 审计 + Timeline）
  *  Demo 3 — 多工具并发 + 输入验证（ToolExecutor.runBatch + isConcurrencySafe + validateInput）
  *  Demo 4 — 直接使用 AgentRuntime（手动构建 context + runtime）
  */
@@ -12,7 +12,7 @@ import { createModelClient, createOpenRouterProvider } from "@renx/provider";
 import { z } from "zod";
 import {
   AgentBase,
-  InMemoryCheckpointStore,
+  InMemoryTimelineStore,
   ConsoleAuditLogger,
   AgentRuntime,
   InMemoryToolRegistry,
@@ -318,8 +318,8 @@ class StreamingFinanceAgent extends AgentBase {
   protected getPolicy() {
     return new WhitelistPolicy(["get_stock_price", "calculator"]);
   }
-  protected getCheckpointStore() {
-    return new InMemoryCheckpointStore();
+  protected getTimelineStore() {
+    return new InMemoryTimelineStore();
   }
   protected getAuditLogger() {
     return new ConsoleAuditLogger();
@@ -474,7 +474,7 @@ async function demo4(client: ReturnType<typeof createModelClient>) {
 
   const services: AgentServices = {
     audit: new ConsoleAuditLogger(),
-    checkpoint: new InMemoryCheckpointStore(),
+    timeline: new InMemoryTimelineStore(),
   };
 
   const ctx: AgentRunContext = {
@@ -494,7 +494,7 @@ async function demo4(client: ReturnType<typeof createModelClient>) {
     systemPrompt: "你是一个助手。使用 get_weather 查天气，使用 calculator 做计算。用中文回答。",
     maxSteps: 5,
     ...(services.audit ? { audit: services.audit } : {}),
-    ...(services.checkpoint ? { checkpoint: services.checkpoint } : {}),
+    ...(services.timeline ? { timeline: services.timeline } : {}),
   });
 
   const result = await runtime.run(ctx);

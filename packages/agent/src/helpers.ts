@@ -17,7 +17,7 @@ export const isTerminalStatus = (status: AgentStatus): boolean =>
 
 /**
  * Returns true if the status represents a pause point
- * (checkpoint saved, control returned to caller).
+ * (timeline snapshot saved, control returned to caller).
  */
 export const shouldPause = (status: AgentStatus): boolean =>
   status === "waiting_approval" || status === "interrupted";
