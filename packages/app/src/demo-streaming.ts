@@ -785,7 +785,6 @@ function createClientAndModel(): {
         providers: [
           createOpenRouterProvider({
             apiKey: openrouterApiKey,
-            timeoutMs: 120_000,
           }),
         ],
         retry: { maxAttempts: 3, baseDelayMs: 1000 },

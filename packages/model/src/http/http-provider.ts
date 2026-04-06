@@ -19,7 +19,6 @@ export interface HttpTransportRetryOptions {
 
 export interface HttpProviderOptions {
   authProvider?: AuthProvider;
-  defaultTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   name?: string;
   transportRetry?: HttpTransportRetryOptions;
@@ -29,7 +28,6 @@ export class HttpProvider implements StreamingProvider {
   name: string;
 
   private readonly authProvider: AuthProvider | undefined;
-  private readonly defaultTimeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly transportRetryMax: number;
   private readonly transportRetryBaseDelayMs: number;
@@ -37,7 +35,6 @@ export class HttpProvider implements StreamingProvider {
   constructor(options: HttpProviderOptions = {}) {
     this.name = options.name ?? "http";
     this.authProvider = options.authProvider;
-    this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30_000;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.transportRetryMax = options.transportRetry?.maxRetries ?? 2;
     this.transportRetryBaseDelayMs = options.transportRetry?.baseDelayMs ?? 200;
@@ -110,7 +107,7 @@ export class HttpProvider implements StreamingProvider {
       method: request.method ?? "POST",
       headers: { ...authHeaders, ...request.headers },
       body: serializeRequestBody(request.body),
-      signal,
+      ...(signal === undefined ? {} : { signal }),
     });
 
     if (!response.ok) {
@@ -127,14 +124,15 @@ export class HttpProvider implements StreamingProvider {
     return response;
   }
 
-  private buildSignal(external?: AbortSignal, requestTimeoutMs?: number): AbortSignal {
-    const timeoutMs = requestTimeoutMs ?? this.defaultTimeoutMs;
-    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  private buildSignal(external?: AbortSignal, requestTimeoutMs?: number): AbortSignal | undefined {
+    if (requestTimeoutMs === undefined) {
+      return external;
+    }
 
+    const timeoutSignal = AbortSignal.timeout(requestTimeoutMs);
     if (external === undefined) {
       return timeoutSignal;
     }
-
     return AbortSignal.any([external, timeoutSignal]);
   }
 }

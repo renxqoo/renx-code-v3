@@ -247,6 +247,22 @@ describe("OpenAICompatAdapter (openai)", () => {
     expect(provider.lastRequest?.signal).toBe(controller.signal);
   });
 
+  it("passes request timeout through to provider request", async () => {
+    const provider = new RecordingProvider({
+      status: 200,
+      headers: {},
+      body: { choices: [{ message: { content: "ok" } }] },
+    });
+    const adapter = new OpenAICompatAdapter(provider, {
+      name: "openai",
+      endpoint: "https://api.openai.com/v1/chat/completions",
+    });
+
+    await adapter.generate({ ...request, timeoutMs: 120_000 });
+
+    expect(provider.lastRequest?.timeoutMs).toBe(120_000);
+  });
+
   it("passes context metadata into provider metadata", async () => {
     const provider = new RecordingProvider({
       status: 200,

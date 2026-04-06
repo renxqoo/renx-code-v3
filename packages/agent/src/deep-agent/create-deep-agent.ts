@@ -337,7 +337,7 @@ const resolveConfig = (options: CreateDeepAgentOptions): ResolvedDeepAgentConfig
     systemPrompt: combineSystemPrompt(options.systemPrompt, extras),
     directTools: options.tools ?? [],
     middlewares: [...backend.middleware, ...(options.middleware ?? [])],
-    maxSteps: options.maxSteps ?? 12,
+    maxSteps: options.maxSteps ?? 100000,
     timeline,
     ...(options.audit ? { audit: options.audit } : {}),
     ...(approval ? { approval } : {}),

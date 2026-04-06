@@ -5,14 +5,12 @@ import { OpenAICompatAdapter } from "./shared/adapter";
 export interface CreateOpenAIProviderOptions {
   apiKey: string;
   endpoint?: string;
-  timeoutMs?: number;
 }
 
 export const createOpenAIProvider = (options: CreateOpenAIProviderOptions): ModelProvider => {
   const httpProvider = new HttpProvider({
     name: "openai",
     authProvider: new ApiKeyAuthProvider(options.apiKey),
-    ...(options.timeoutMs === undefined ? {} : { defaultTimeoutMs: options.timeoutMs }),
   });
 
   return {

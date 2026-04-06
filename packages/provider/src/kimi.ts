@@ -9,7 +9,6 @@ export interface CreateKimiProviderOptions {
   apiKey: string;
   baseURL?: string;
   endpointPath?: string;
-  timeoutMs?: number;
 }
 
 export const createKimiProvider = (options: CreateKimiProviderOptions): ModelProvider => {
@@ -20,7 +19,6 @@ export const createKimiProvider = (options: CreateKimiProviderOptions): ModelPro
   const httpProvider = new HttpProvider({
     name: "kimi",
     authProvider: new ApiKeyAuthProvider(options.apiKey),
-    ...(options.timeoutMs === undefined ? {} : { defaultTimeoutMs: options.timeoutMs }),
   });
 
   return {

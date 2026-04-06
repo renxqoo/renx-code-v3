@@ -214,6 +214,23 @@ describe("HttpProvider", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it("does not inject a timeout signal when request timeout is omitted", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(init?.signal).toBeUndefined();
+      return jsonResponse({ ok: true });
+    });
+
+    const provider = new HttpProvider({ fetchImpl });
+
+    await provider.execute({
+      url: "https://example.test/chat",
+      headers: {},
+      body: {},
+    });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("aborts when external signal is already aborted", async () => {
     const controller = new AbortController();
     controller.abort();

@@ -81,6 +81,7 @@ export class OpenAICompatAdapter extends BaseModelAdapter {
       url: this.endpoint,
       headers: { "Content-Type": "application/json" },
       body,
+      ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.metadata === undefined && request.contextMetadata === undefined
         ? {}

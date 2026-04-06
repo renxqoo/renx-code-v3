@@ -9,7 +9,6 @@ export interface CreateGlmProviderOptions {
   apiKey: string;
   baseURL?: string;
   endpointPath?: string;
-  timeoutMs?: number;
 }
 
 export const createGlmProvider = (options: CreateGlmProviderOptions): ModelProvider => {
@@ -20,7 +19,6 @@ export const createGlmProvider = (options: CreateGlmProviderOptions): ModelProvi
   const httpProvider = new HttpProvider({
     name: "glm",
     authProvider: new ApiKeyAuthProvider(options.apiKey),
-    ...(options.timeoutMs === undefined ? {} : { defaultTimeoutMs: options.timeoutMs }),
   });
 
   return {

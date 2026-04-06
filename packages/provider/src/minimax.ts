@@ -9,7 +9,6 @@ export interface CreateMiniMaxProviderOptions {
   apiKey: string;
   baseURL?: string;
   endpointPath?: string;
-  timeoutMs?: number;
 }
 
 export const createMiniMaxProvider = (options: CreateMiniMaxProviderOptions): ModelProvider => {
@@ -20,7 +19,6 @@ export const createMiniMaxProvider = (options: CreateMiniMaxProviderOptions): Mo
   const httpProvider = new HttpProvider({
     name: "minimax",
     authProvider: new ApiKeyAuthProvider(options.apiKey),
-    ...(options.timeoutMs === undefined ? {} : { defaultTimeoutMs: options.timeoutMs }),
   });
 
   return {

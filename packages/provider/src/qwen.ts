@@ -9,7 +9,6 @@ export interface CreateQwenProviderOptions {
   apiKey: string;
   baseURL?: string;
   endpointPath?: string;
-  timeoutMs?: number;
 }
 
 export const createQwenProvider = (options: CreateQwenProviderOptions): ModelProvider => {
@@ -20,7 +19,6 @@ export const createQwenProvider = (options: CreateQwenProviderOptions): ModelPro
   const httpProvider = new HttpProvider({
     name: "qwen",
     authProvider: new ApiKeyAuthProvider(options.apiKey),
-    ...(options.timeoutMs === undefined ? {} : { defaultTimeoutMs: options.timeoutMs }),
   });
 
   return {

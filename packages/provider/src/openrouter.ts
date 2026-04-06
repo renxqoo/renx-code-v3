@@ -7,7 +7,6 @@ const DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 export interface CreateOpenRouterProviderOptions {
   apiKey: string;
   endpoint?: string;
-  timeoutMs?: number;
 }
 
 export const createOpenRouterProvider = (
@@ -16,7 +15,6 @@ export const createOpenRouterProvider = (
   const httpProvider = new HttpProvider({
     name: "openrouter",
     authProvider: new ApiKeyAuthProvider(options.apiKey),
-    ...(options.timeoutMs === undefined ? {} : { defaultTimeoutMs: options.timeoutMs }),
   });
 
   return {

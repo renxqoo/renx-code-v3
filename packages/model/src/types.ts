@@ -34,6 +34,7 @@ export interface ModelRequest {
   tools: ToolDefinition[];
   temperature?: number;
   maxTokens?: number;
+  timeoutMs?: number;
   metadata?: Metadata;
   contextMetadata?: {
     apiViewId?: string;
