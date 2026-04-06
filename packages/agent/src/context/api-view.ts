@@ -27,22 +27,24 @@ export const projectApiView = (
     return !canonicalIds.has(message.id);
   });
 
-  const canonicalWithRestoredSummary = restoreSummaryFromPreservedSegment(
-    canonicalFromBoundary,
-    state,
+  const canonicalWithRelinkedTail = restoreCanonicalMessages(canonicalFromBoundary, state);
+  const transientMessages = apiView.filter((message) => !canonicalIds.has(message.id));
+  const canonicalApiView = canonicalWithRelinkedTail.map(
+    ({ messageId: _messageId, source: _source, ...msg }) => msg,
   );
-  const restoredSummaryIds = new Set(canonicalWithRestoredSummary.map((m) => m.id));
-  const apiWithSummary = [
-    ...canonicalWithRestoredSummary
-      .filter((m) => m.role === "system" && m.id.startsWith("restored_summary_"))
-      .map(({ messageId: _messageId, source: _source, ...msg }) => msg),
-    ...apiView.filter((m) => restoredSummaryIds.has(m.id) || !canonicalIds.has(m.id)),
-  ];
 
   return {
-    apiView: apiWithSummary,
-    canonical: canonicalWithRestoredSummary,
+    apiView: [...transientMessages, ...canonicalApiView],
+    canonical: canonicalWithRelinkedTail,
   };
+};
+
+export const restoreCanonicalMessages = (
+  canonical: RunMessage[],
+  state?: ContextRuntimeState,
+): RunMessage[] => {
+  const canonicalWithRestoredSummary = restoreSummaryFromPreservedSegment(canonical, state);
+  return restorePreservedTailFromSegment(canonicalWithRestoredSummary, state);
 };
 
 const findLatestBoundaryIndex = (messages: RunMessage[]): number => {
@@ -57,12 +59,14 @@ const restoreSummaryFromPreservedSegment = (
   state?: ContextRuntimeState,
 ): RunMessage[] => {
   if (!state || canonical.length === 0) return canonical;
-  const hasSummary = canonical.some((m) => m.id.startsWith("summary_"));
+  const hasSummary = canonical.some(
+    (m) => m.id.startsWith("summary_") || m.id.startsWith("restored_summary_"),
+  );
   if (hasSummary) return canonical;
   const boundary = canonical[0];
   const segmentId = boundary?.preservedSegmentRef?.segmentId;
   if (!segmentId) return canonical;
-  const preserved = state.preservedSegments[segmentId];
+  const preserved = state.preservedSegments?.[segmentId];
   if (!preserved) return canonical;
 
   const summary: RunMessage = {
@@ -78,4 +82,78 @@ const restoreSummaryFromPreservedSegment = (
     },
   };
   return [canonical[0]!, summary, ...canonical.slice(1)];
+};
+
+const restorePreservedTailFromSegment = (
+  canonical: RunMessage[],
+  state?: ContextRuntimeState,
+): RunMessage[] => {
+  if (!state || canonical.length === 0) return canonical;
+  const boundary = canonical[0];
+  const segmentId = boundary?.preservedSegmentRef?.segmentId;
+  if (!segmentId) return canonical;
+
+  const relink = boundary?.metadata?.["preservedSegmentRelink"];
+  if (!relink || typeof relink !== "object") return canonical;
+
+  const preserved = state.preservedSegments?.[segmentId];
+  if (!preserved?.messages || preserved.messages.length === 0) return canonical;
+
+  const relinkInfo = relink as {
+    headMessageId?: string;
+    anchorMessageId?: string;
+    tailMessageId?: string;
+  };
+  const storedTail = sliceStoredTail(preserved.messages, relinkInfo);
+  if (storedTail.length === 0) return canonical;
+
+  const summaryIndex = canonical.findIndex(
+    (message) =>
+      message.id === relinkInfo.anchorMessageId ||
+      message.id.startsWith("summary_") ||
+      message.id.startsWith("restored_summary_"),
+  );
+  const insertIndex = summaryIndex >= 0 ? summaryIndex + 1 : 1;
+  const prefix = canonical.slice(0, insertIndex);
+  const suffix = canonical.slice(insertIndex);
+  const suffixById = new Map(suffix.map((message) => [message.id, message]));
+  const storedTailIds = new Set(storedTail.map((message) => message.id));
+  const orderedTail = storedTail.map((message) => suffixById.get(message.id) ?? message);
+  const remainingSuffix = suffix.filter((message) => !storedTailIds.has(message.id));
+
+  return [...prefix, ...orderedTail, ...remainingSuffix];
+};
+
+const sliceStoredTail = (
+  messages: RunMessage[],
+  relink: {
+    headMessageId?: string;
+    tailMessageId?: string;
+  },
+): RunMessage[] => {
+  const headIndex = relink.headMessageId
+    ? messages.findIndex((message) => message.id === relink.headMessageId)
+    : -1;
+  const tailIndex = relink.tailMessageId
+    ? messages.findIndex((message) => message.id === relink.tailMessageId)
+    : -1;
+
+  if (headIndex < 0 || tailIndex < 0 || tailIndex < headIndex) {
+    return dedupeMessagesById(messages);
+  }
+
+  return dedupeMessagesById(messages.slice(headIndex, tailIndex + 1));
+};
+
+const dedupeMessagesById = (messages: RunMessage[]): RunMessage[] => {
+  const seen = new Set<string>();
+  const deduped: RunMessage[] = [];
+
+  for (const message of messages) {
+    if (seen.has(message.id)) continue;
+    seen.add(message.id);
+    deduped.push(message);
+  }
+
+  return deduped;
 };

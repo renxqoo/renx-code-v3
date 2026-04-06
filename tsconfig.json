@@ -18,6 +18,15 @@
     },
     {
       "path": "./packages/agent"
+    },
+    {
+      "path": "./packages/agent-tools"
+    },
+    {
+      "path": "./packages/agent-sandbox"
+    },
+    {
+      "path": "./packages/coding-agent"
     }
   ]
 }

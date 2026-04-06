@@ -26,8 +26,20 @@ export type { ModelAdapter, ModelAdapterRequestDescriptor } from "./adapter";
 export { BaseModelAdapter } from "./adapter";
 
 // Client — selective (hide DefaultModelClient)
-export { createModelClient } from "./client";
-export type { CreateModelClientOptions, ModelClient, ModelProvider, ModelResolver } from "./client";
+export {
+  clearDefaultModelClient,
+  createModelBinding,
+  createModelClient,
+  getDefaultModelClient,
+  setDefaultModelClient,
+} from "./client";
+export type {
+  CreateModelClientOptions,
+  ModelBinding,
+  ModelClient,
+  ModelProvider,
+  ModelResolver,
+} from "./client";
 
 // Errors — selective (hide removed dead interfaces)
 export { ModelError, createNormalizedModelError } from "./errors";

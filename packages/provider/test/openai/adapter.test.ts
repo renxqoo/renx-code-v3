@@ -276,6 +276,50 @@ describe("OpenAICompatAdapter (openai)", () => {
     });
   });
 
+  it("passes context management into provider request body", async () => {
+    const provider = new RecordingProvider({
+      status: 200,
+      headers: {},
+      body: { choices: [{ message: { content: "ok" } }] },
+    });
+    const adapter = new OpenAICompatAdapter(provider, {
+      name: "openai",
+      endpoint: "https://api.openai.com/v1/chat/completions",
+    });
+
+    await adapter.generate({
+      ...request,
+      contextMetadata: {
+        apiViewId: "api_view_1",
+        compactBoundaryId: "boundary_1",
+        thresholdLevel: "auto_compact",
+        contextManagement: {
+          edits: [
+            {
+              type: "clear_tool_uses_20250919",
+              trigger: { type: "input_tokens", value: 180000 },
+              clear_at_least: { type: "input_tokens", value: 140000 },
+              clear_tool_inputs: ["bash", "read"],
+            },
+          ],
+        },
+      },
+    });
+
+    expect(provider.lastRequest?.body).toMatchObject({
+      context_management: {
+        edits: [
+          {
+            type: "clear_tool_uses_20250919",
+            trigger: { type: "input_tokens", value: 180000 },
+            clear_at_least: { type: "input_tokens", value: 140000 },
+            clear_tool_inputs: ["bash", "read"],
+          },
+        ],
+      },
+    });
+  });
+
   // ── streaming ──
 
   it("streams text delta events", async () => {

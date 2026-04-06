@@ -24,6 +24,13 @@ import { MiddlewarePipeline } from "../middleware/pipeline";
 import type { AgentTool, ToolResult } from "../tool/types";
 import { AllowAllPolicy } from "../policy";
 import { ContextOrchestrator } from "../context";
+import { clearPendingPostCompactLifecycle } from "../context/persistence";
+import {
+  ModelSessionMemoryExtractor,
+  SessionMemoryService,
+  sessionMemoryRecordFromState,
+} from "../context/session-memory";
+import { MemoryService } from "../memory";
 import { TimelineManager } from "../timeline";
 
 import type { RuntimeConfig } from "./config";
@@ -65,6 +72,8 @@ export class AgentRuntime {
   private readonly contextService: RuntimeContextService;
   private readonly approvalService: RuntimeApprovalService;
   private readonly auditService: RuntimeAuditService;
+  private readonly memoryService: MemoryService;
+  private readonly sessionMemoryService: SessionMemoryService | undefined;
 
   constructor(private readonly config: RuntimeConfig) {
     this.modelClient = config.modelClient;
@@ -99,6 +108,7 @@ export class AgentRuntime {
     );
 
     this.auditService = new RuntimeAuditService(config.audit);
+    this.memoryService = new MemoryService(config.memory);
     this.modelService = new RuntimeModelService(
       this.modelClient,
       modelMaxRetries,
@@ -106,14 +116,23 @@ export class AgentRuntime {
       retryMaxDelayMs,
     );
     this.contextOrchestrator = new ContextOrchestrator(config.context);
+    const sessionMemorySubsystem = config.memory?.session ?? config.sessionMemory;
+    this.sessionMemoryService = sessionMemorySubsystem
+      ? new SessionMemoryService(
+          sessionMemorySubsystem,
+          new ModelSessionMemoryExtractor(this.modelClient, this.model),
+        )
+      : undefined;
     this.contextService = new RuntimeContextService(
       this.contextOrchestrator,
       this.messageManager,
       this.modelClient,
       this.model,
       config.systemPrompt,
+      this.sessionMemoryService,
       (ctx, patch) => this.patchState(ctx, patch),
       this.auditService,
+      config.contextLifecycleHooks,
     );
     this.approvalService = new RuntimeApprovalService(
       this.timeline,
@@ -149,16 +168,46 @@ export class AgentRuntime {
   }
 
   private async runInitialize(ctx: AgentRunContext): Promise<AgentRunContext> {
+    ctx = {
+      ...ctx,
+      state: await this.memoryService.hydrateState(
+        ctx.state.runId,
+        ctx.state,
+        this.toMemoryScopeContext(ctx),
+      ),
+    };
+    if (this.config.memory && !ctx.services.memory) {
+      ctx = {
+        ...ctx,
+        services: {
+          ...ctx.services,
+          memory: this.config.memory,
+        },
+      };
+    }
+    const sessionMemorySubsystem = this.config.memory?.session ?? this.config.sessionMemory;
+    if (sessionMemorySubsystem && !ctx.services.sessionMemory) {
+      ctx = {
+        ...ctx,
+        services: {
+          ...ctx.services,
+          sessionMemory: sessionMemorySubsystem,
+        },
+      };
+    }
     const incoming = this.messageManager.normalizeIncoming(ctx.input);
     for (const msg of incoming) {
       ctx = this.patchState(ctx, { appendMessages: [msg] });
     }
     await this.pipeline.runBeforeRun(ctx);
-    if (ctx.state.stepCount === 0) await this.saveTimelineSnapshot(ctx.state);
+    if (ctx.state.stepCount === 0) await this.saveTimelineSnapshot(ctx);
 
     this.auditService.emit(ctx, {
       type: "run_started",
-      payload: { stepCount: 0, inputType: ctx.input.inputText ? "text" : "messages" },
+      payload: {
+        stepCount: 0,
+        inputType: ctx.input.messages && ctx.input.messages.length > 0 ? "messages" : "empty",
+      },
     });
     return ctx;
   }
@@ -180,7 +229,7 @@ export class AgentRuntime {
     try {
       modelResponse = await this.modelService.generateWithRetry(preparedTurn.modelRequest);
     } catch (error) {
-      const recovered = this.contextService.tryRecoverFromModelError(ctx, error);
+      const recovered = await this.contextService.tryRecoverFromModelError(ctx, error);
       if (recovered.recovered) {
         return { ctx: recovered.ctx, flow: "continue" };
       }
@@ -229,7 +278,7 @@ export class AgentRuntime {
     const result = this.buildResultFromState(ctx.state);
 
     await this.pipeline.runAfterRun(ctx, result);
-    await this.saveTimelineSnapshot(ctx.state);
+    await this.saveTimelineSnapshot(ctx);
     this.emitTerminalAudit(ctx);
     return result;
   }
@@ -255,7 +304,7 @@ export class AgentRuntime {
     } catch {
       // Keep original failure.
     }
-    await this.saveTimelineSnapshot(ctx.state);
+    await this.saveTimelineSnapshot(ctx);
     this.auditService.emit(ctx, {
       type: "run_failed",
       payload: { code: agentError.code, message: agentError.message },
@@ -337,7 +386,7 @@ export class AgentRuntime {
         ctx,
       );
     } catch (error) {
-      const recovered = this.contextService.tryRecoverFromModelError(ctx, error);
+      const recovered = await this.contextService.tryRecoverFromModelError(ctx, error);
       if (recovered.recovered) {
         return { ctx: recovered.ctx, flow: "continue" };
       }
@@ -399,11 +448,22 @@ export class AgentRuntime {
     state: AgentState,
     options?: { includeOutput?: boolean },
   ): AgentResult {
-    const result: AgentResult = { runId: state.runId, status: state.status, state };
+    const result: AgentResult = {
+      runId: state.runId,
+      status: state.status,
+      state,
+      messages: state.messages,
+    };
     if ((options?.includeOutput ?? true) && state.lastModelResponse?.type === "final") {
       result.output = state.lastModelResponse.output;
     }
     if (state.error) result.error = state.error;
+    if (
+      state.lastToolCall?.name === "StructuredOutput" &&
+      state.lastToolResult?.structured !== undefined
+    ) {
+      result.structuredResponse = state.lastToolResult.structured;
+    }
     return result;
   }
 
@@ -437,11 +497,11 @@ export class AgentRuntime {
 
     ctx = pendingApproval.ctx;
     if (pendingApproval.waiting || pendingApproval.shouldStop) {
-      await this.saveTimelineSnapshot(ctx.state);
+      await this.saveTimelineSnapshot(ctx);
       return { ctx, proceed: false, flow: "break" };
     }
     if (pendingApproval.executedResult) {
-      await this.saveTimelineSnapshot(ctx.state);
+      await this.saveTimelineSnapshot(ctx);
     }
     return {
       ctx,
@@ -471,7 +531,7 @@ export class AgentRuntime {
     const toolDefs: ToolDefinition[] = allowedTools.map((t) => ({
       name: t.name,
       description: t.description,
-      inputSchema: toToolInputSchema(t.schema),
+      inputSchema: toToolInputSchema(t),
     }));
 
     const preparedStep = await this.contextService.prepareStepContext(ctx, toolDefs, signal);
@@ -550,7 +610,7 @@ export class AgentRuntime {
       ctx = this.patchState(ctx, {}, (s) =>
         this.messageManager.appendUserMessage(s, finalDecision.continueWithUserMessage!),
       );
-      await this.saveTimelineSnapshot(ctx.state);
+      await this.saveTimelineSnapshot(ctx);
       return { ctx, shouldContinue: true };
     }
     ctx = this.patchState(ctx, {}, (s) =>
@@ -561,6 +621,9 @@ export class AgentRuntime {
       ),
     );
     ctx = this.patchState(ctx, { setStatus: "completed" });
+    ctx = await this.maybeExtractSessionMemory(ctx);
+    ctx = await this.maybeAutoSaveMemory(ctx);
+    ctx = await this.completePostCompactLifecycle(ctx);
     return { ctx, shouldContinue: false };
   }
 
@@ -635,7 +698,7 @@ export class AgentRuntime {
         if (options?.collectStreamEvents) {
           events.push({ type: "tool_result", result: outputForMessage });
         }
-        await this.saveTimelineSnapshot(ctx.state);
+        await this.saveTimelineSnapshot(ctx);
         continue;
       }
       const canUse = await this.policy.canUseTool(ctx, tool, call.input);
@@ -659,7 +722,7 @@ export class AgentRuntime {
           thinkingChunkGroupId,
           approvalEval,
         );
-        await this.saveTimelineSnapshot(ctx.state);
+        await this.saveTimelineSnapshot(ctx);
         shouldStop = true;
         break;
       }
@@ -677,13 +740,16 @@ export class AgentRuntime {
       if (options?.collectStreamEvents && execution.toolOutput) {
         events.push({ type: "tool_result", result: execution.toolOutput });
       }
-      await this.saveTimelineSnapshot(ctx.state);
+      await this.saveTimelineSnapshot(ctx);
       if (execution.shouldStop) {
         shouldStop = true;
         break;
       }
     }
 
+    ctx = await this.maybeExtractSessionMemory(ctx);
+    ctx = await this.maybeAutoSaveMemory(ctx);
+    ctx = await this.completePostCompactLifecycle(ctx);
     return { ctx, shouldStop, events };
   }
 
@@ -772,8 +838,101 @@ export class AgentRuntime {
     return { ...ctx, state };
   }
 
-  private async saveTimelineSnapshot(state: AgentState): Promise<void> {
-    await this.timeline.save(state.runId, state);
+  private async saveTimelineSnapshot(ctx: AgentRunContext): Promise<void> {
+    await this.timeline.save(ctx.state.runId, ctx.state);
+    await this.memoryService.persistStateWithScopes(
+      ctx.state.runId,
+      ctx.state,
+      this.toMemoryScopeContext(ctx),
+    );
+    const store = ctx.services.sessionMemory?.store;
+    if (!store) return;
+    const record = sessionMemoryRecordFromState(ctx.state);
+    if (!record) return;
+    await store.save(ctx.state.runId, record);
+  }
+
+  private async maybeExtractSessionMemory(ctx: AgentRunContext): Promise<AgentRunContext> {
+    if (!this.sessionMemoryService) return ctx;
+    const currentRecord =
+      sessionMemoryRecordFromState(ctx.state) ??
+      (await this.sessionMemoryService.ensureRecord(ctx.state.runId));
+    const querySource =
+      typeof ctx.metadata?.["querySource"] === "string"
+        ? (ctx.metadata["querySource"] as string)
+        : undefined;
+    await this.sessionMemoryService.maybeExtract({
+      runId: ctx.state.runId,
+      messages: ctx.state.messages,
+      record: currentRecord,
+      ...(querySource ? { querySource } : {}),
+      ...(ctx.input.signal ? { signal: ctx.input.signal } : {}),
+    });
+    return {
+      ...ctx,
+      state: await this.sessionMemoryService.hydrateState(ctx.state.runId, ctx.state, {
+        waitForPendingExtraction: false,
+      }),
+    };
+  }
+
+  private async maybeAutoSaveMemory(ctx: AgentRunContext): Promise<AgentRunContext> {
+    const querySource =
+      typeof ctx.metadata?.["querySource"] === "string"
+        ? (ctx.metadata["querySource"] as string)
+        : undefined;
+    const nextState = await this.memoryService.maybeAutoSave(
+      ctx.state.runId,
+      ctx.state,
+      this.toMemoryScopeContext(ctx),
+      {
+        ...(querySource ? { querySource } : {}),
+        ...(ctx.input.signal ? { signal: ctx.input.signal } : {}),
+      },
+    );
+    if (nextState === ctx.state) return ctx;
+    return {
+      ...ctx,
+      state: nextState,
+    };
+  }
+
+  private async completePostCompactLifecycle(ctx: AgentRunContext): Promise<AgentRunContext> {
+    const hooks = this.config.contextLifecycleHooks;
+    const pending = ctx.state.context?.pendingPostCompactLifecycle;
+    if (!pending || !ctx.state.context) return ctx;
+    if (!hooks?.onPostCompactTurnComplete) {
+      return {
+        ...ctx,
+        state: {
+          ...ctx.state,
+          context: clearPendingPostCompactLifecycle(ctx.state.context),
+        },
+      };
+    }
+    const diagnostic = (ctx.state.context?.compactionDiagnostics ?? []).find(
+      (entry) => entry.diagnosticId === pending.diagnosticId,
+    );
+    if (!diagnostic) {
+      return {
+        ...ctx,
+        state: {
+          ...ctx.state,
+          context: clearPendingPostCompactLifecycle(ctx.state.context!),
+        },
+      };
+    }
+    await hooks.onPostCompactTurnComplete({
+      runId: ctx.state.runId,
+      diagnostic,
+    });
+    return {
+      ...ctx,
+      state: {
+        ...ctx.state,
+        context: clearPendingPostCompactLifecycle(ctx.state.context!),
+      },
+    };
   }
 
   private buildMissingToolResult(call: ToolCall): ToolResult {
@@ -793,6 +952,25 @@ export class AgentRuntime {
         errorCode: "TOOL_NOT_FOUND",
         toolName: call.name,
         toolCallId: call.id,
+      },
+    };
+  }
+
+  private toMemoryScopeContext(ctx: AgentRunContext): {
+    runId: string;
+    userId?: string;
+    tenantId?: string;
+    threadId?: string;
+    metadata?: Record<string, unknown>;
+  } {
+    return {
+      runId: ctx.state.runId,
+      ...(ctx.identity.userId ? { userId: ctx.identity.userId } : {}),
+      ...(ctx.identity.tenantId ? { tenantId: ctx.identity.tenantId } : {}),
+      ...(ctx.state.threadId ? { threadId: ctx.state.threadId } : {}),
+      metadata: {
+        ...(ctx.metadata ?? {}),
+        ...(ctx.input.metadata ?? {}),
       },
     };
   }

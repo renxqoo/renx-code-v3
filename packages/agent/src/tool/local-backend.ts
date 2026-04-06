@@ -1,9 +1,12 @@
 import { execFile } from "node:child_process";
+import { dirname } from "node:path";
 import { platform } from "node:process";
 import { promisify } from "node:util";
 
 import type {
+  BackendSession,
   BackendCapabilities,
+  CreateSessionOptions,
   ExecOptions,
   ExecResult,
   ExecutionBackend,
@@ -37,17 +40,26 @@ export class LocalBackend implements ExecutionBackend {
       filesystemRead: true,
       filesystemWrite: true,
       network: true,
+      binaryRead: true,
+      pathMetadata: true,
     };
   }
 
   async exec(command: string, opts?: ExecOptions): Promise<ExecResult> {
     const execOpts = buildChildExecOpts(opts);
+    const startedAt = Date.now();
     try {
       const { stdout, stderr } =
         platform === "win32"
           ? await execWindowsPreferPowerShell(command, execOpts)
           : await execFileAsync("sh", ["-lc", command], execOpts);
-      return { stdout, stderr, exitCode: 0 };
+      return {
+        stdout,
+        stderr,
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+        ...(opts?.sessionId ? { sessionId: opts.sessionId } : {}),
+      };
     } catch (err: unknown) {
       const e = err as { stdout?: string; stderr?: string; code?: string | number };
       let exitCode = 1;
@@ -62,6 +74,8 @@ export class LocalBackend implements ExecutionBackend {
         stdout: e.stdout ?? "",
         stderr: e.stderr ?? String(err),
         exitCode,
+        durationMs: Date.now() - startedAt,
+        ...(opts?.sessionId ? { sessionId: opts.sessionId } : {}),
       };
     }
   }
@@ -71,8 +85,14 @@ export class LocalBackend implements ExecutionBackend {
     return fs.readFile(path, "utf-8");
   }
 
+  async readBinaryFile(path: string): Promise<Uint8Array> {
+    const fs = await import("node:fs/promises");
+    return await fs.readFile(path);
+  }
+
   async writeFile(path: string, content: string): Promise<void> {
     const fs = await import("node:fs/promises");
+    await fs.mkdir(dirname(path), { recursive: true });
     await fs.writeFile(path, content, "utf-8");
   }
 
@@ -91,5 +111,32 @@ export class LocalBackend implements ExecutionBackend {
         };
       }),
     );
+  }
+
+  async statPath(path: string): Promise<FileInfo | undefined> {
+    const fs = await import("node:fs/promises");
+    try {
+      const info = await fs.stat(path);
+      return {
+        path,
+        isDirectory: info.isDirectory(),
+        size: info.size,
+        modifiedAt: info.mtime.toISOString(),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  async createSession(options?: CreateSessionOptions): Promise<BackendSession> {
+    return {
+      id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+      ...(options?.cwd ? { cwd: options.cwd } : {}),
+      ...(options?.metadata ? { metadata: options.metadata } : {}),
+    };
+  }
+
+  async closeSession(_sessionId: string): Promise<void> {
+    return;
   }
 }

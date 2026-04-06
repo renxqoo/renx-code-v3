@@ -35,6 +35,7 @@ export interface ContextManagerConfig {
   historySnipKeepRounds: number;
   historySnipMaxDropRounds: number;
   microcompactMaxToolChars: number;
+  microcompactMaxAgeMs?: number;
   collapseRestoreMaxMessages: number;
   collapseRestoreTokenHeadroomRatio: number;
   rehydrationTokenBudget: number;
@@ -64,9 +65,54 @@ export interface ContextLayerExecution {
 export interface CompactBoundaryRecord {
   boundaryId: string;
   parentBoundaryId?: string;
-  strategy: "session_memory" | "auto_compact" | "reactive_compact";
+  strategy: "session_memory" | "auto_compact" | "reactive_compact" | "manual_compact";
   createdAt: string;
   compactedMessageCount: number;
+}
+
+export type PreservedContextKind =
+  | "recent_files"
+  | "plan"
+  | "skills"
+  | "rules"
+  | "hooks"
+  | "mcp"
+  | "custom";
+
+export interface PreservedContextAsset {
+  id: string;
+  kind: PreservedContextKind;
+  content: string;
+  title?: string;
+  priority?: number;
+  budgetTokens?: number;
+  allowTruncation?: boolean;
+  updatedAt: string;
+  scope?: "user" | "project" | "local";
+  metadata?: Record<string, unknown>;
+}
+
+export interface EffectiveRequestSnapshot {
+  capturedAt: string;
+  systemPrompt: string;
+  messages: AgentMessage[];
+  toolNames: string[];
+  contextMetadata?: Record<string, unknown>;
+}
+
+export interface ContextCompactionDiagnostic {
+  diagnosticId: string;
+  strategy: CompactBoundaryRecord["strategy"];
+  source: "prepare" | "manual" | "recovery";
+  reason: string;
+  createdAt: string;
+  querySource?: string;
+  beforeTokens: number;
+  afterTokens: number;
+  compactedMessageCount: number;
+  boundaryId?: string;
+  preservedSegmentId?: string;
+  rehydratedAssetIds: string[];
 }
 
 export interface ContextRuntimeState {
@@ -82,16 +128,28 @@ export interface ContextRuntimeState {
   consecutiveCompactFailures: number;
   promptTooLongRetries: number;
   toolResultCache: Record<string, string>;
+  preservedContextAssets?: Record<string, PreservedContextAsset>;
   preservedSegments: Record<
     string,
     {
       digest: string;
       summary: string;
       messageIds: string[];
+      messages?: RunMessage[];
       createdAt: string;
     }
   >;
   compactBoundaries: CompactBoundaryRecord[];
+  compactionDiagnostics?: ContextCompactionDiagnostic[];
+  pendingPostCompactLifecycle?: {
+    diagnosticId: string;
+    strategy: CompactBoundaryRecord["strategy"];
+    source: ContextCompactionDiagnostic["source"];
+    createdAt: string;
+    boundaryId?: string;
+    startedAt?: string;
+  };
+  lastEffectiveRequestSnapshot?: EffectiveRequestSnapshot;
   contextCollapseState?: {
     collapsedMessageIds: string[];
     lastCollapsedAt: string;
@@ -110,11 +168,15 @@ export interface ContextRuntimeState {
     evictedRefs: string[];
   };
   sessionMemoryState?: {
-    lastSummaryAt?: string;
+    template?: string;
+    notes?: string;
+    initialized?: boolean;
+    tokensAtLastExtraction?: number;
     summarySourceRound?: number;
-    hotSummaryText?: string;
-    coldSummaryText?: string;
-    lastColdSummaryAt?: string;
+    lastExtractionMessageId?: string;
+    lastSummarizedMessageId?: string;
+    lastExtractedAt?: string;
+    extractionStartedAt?: string;
   };
 }
 

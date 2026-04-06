@@ -1,4 +1,5 @@
 import type { AgentState, AgentStatePatch } from "./types";
+import { mergeMemorySnapshot } from "./memory";
 
 /**
  * Immutable state reducer — always returns a new object.
@@ -11,7 +12,7 @@ export const applyStatePatch = (state: AgentState, patch?: AgentStatePatch): Age
     ...(patch.replaceMessages ? { messages: patch.replaceMessages } : {}),
     ...(patch.appendMessages ? { messages: [...state.messages, ...patch.appendMessages] } : {}),
     ...(patch.setScratchpad ? { scratchpad: { ...state.scratchpad, ...patch.setScratchpad } } : {}),
-    ...(patch.mergeMemory ? { memory: { ...state.memory, ...patch.mergeMemory } } : {}),
+    ...(patch.mergeMemory ? { memory: mergeMemorySnapshot(state.memory, patch.mergeMemory) } : {}),
     ...(patch.setContext ? { context: patch.setContext } : {}),
     ...(patch.setStatus ? { status: patch.setStatus } : {}),
     ...(patch.setError ? { error: patch.setError } : {}),

@@ -170,4 +170,40 @@ describe("ContextOrchestrator red tests from design docs", () => {
     });
     expect(second.recovered).toBe(false);
   });
+
+  it("prepare should suppress auto compact for session-memory/internal compaction sources", () => {
+    const orchestrator = new ContextOrchestrator({
+      maxInputTokens: 800,
+      thresholds: {
+        warningBufferTokens: 0,
+        autoCompactBufferTokens: 700,
+        errorBufferTokens: 100,
+        blockingHeadroomTokens: -10_000,
+      },
+    });
+    const canonical = Array.from({ length: 20 }, (_, idx) =>
+      makeRunMessage(idx, idx, `round-${idx}-${"x".repeat(300)}`),
+    );
+
+    const prepared = (
+      orchestrator as unknown as {
+        prepare(input: Record<string, unknown>): ReturnType<ContextOrchestrator["prepare"]>;
+      }
+    ).prepare({
+      systemPrompt: "system",
+      tools: noTools,
+      apiView: canonical.map(toApiMessage),
+      canonicalMessages: canonical,
+      memory: {},
+      contextState: initialContextRuntimeState(),
+      querySource: "session_memory",
+    });
+
+    expect(prepared.nextState.compactBoundaries).toHaveLength(0);
+    expect(
+      prepared.nextState.lastLayerExecutions.some(
+        (layer) => layer.layer === "session_memory_compact" || layer.layer === "auto_compact",
+      ),
+    ).toBe(false);
+  });
 });

@@ -29,6 +29,11 @@ export interface ModelClient {
   resolve(model: string): ResolvedModel;
 }
 
+export interface ModelBinding {
+  client: ModelClient;
+  name: string;
+}
+
 export interface ModelProvider {
   name: string;
   adapter: ModelAdapter;
@@ -297,6 +302,23 @@ export class DefaultModelClient implements ModelClient {
 
 export const createModelClient = (options: CreateModelClientOptions): ModelClient => {
   return new DefaultModelClient(options);
+};
+
+export const createModelBinding = (client: ModelClient, name: string): ModelBinding => ({
+  client,
+  name,
+});
+
+let defaultModelClient: ModelClient | undefined;
+
+export const setDefaultModelClient = (client: ModelClient): void => {
+  defaultModelClient = client;
+};
+
+export const getDefaultModelClient = (): ModelClient | undefined => defaultModelClient;
+
+export const clearDefaultModelClient = (): void => {
+  defaultModelClient = undefined;
 };
 
 const toProviderModelRequest = (request: ModelRequest, model: ResolvedModel): ModelRequest => {

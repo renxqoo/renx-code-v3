@@ -10,12 +10,16 @@ import { applyContextCollapse, restoreCollapsedContext } from "./context-collaps
 import { applyHistorySnip } from "./history-snip";
 import { applyMicrocompact } from "./microcompact";
 import { recoverFromContextError } from "./recovery";
-import { buildRehydrationHints } from "./rehydration";
+import { resolveRehydrationPlan } from "./rehydration";
 import { stripMediaFromMessages } from "./media-strip";
 import { applySessionMemoryCompact } from "./session-memory-compact";
 import { buildBudgetSnapshot } from "./thresholds";
 import { applyToolResultBudget, hydrateToolResultCacheRefs } from "./tool-result-budget";
-import { appendCompactBoundary, storePreservedSegment } from "./persistence";
+import {
+  appendCompactBoundary,
+  recordCompactionDiagnostic,
+  storePreservedSegment,
+} from "./persistence";
 import type {
   ContextErrorRecoveryResult,
   ContextManagerConfig,
@@ -54,8 +58,10 @@ export const initialContextRuntimeState = (): ContextRuntimeState => ({
   consecutiveCompactFailures: 0,
   promptTooLongRetries: 0,
   toolResultCache: {},
+  preservedContextAssets: {},
   preservedSegments: {},
   compactBoundaries: [],
+  compactionDiagnostics: [],
   toolResultStorageState: {
     cachedRefs: [],
     evictedRefs: [],
@@ -82,8 +88,9 @@ export class ContextOrchestrator {
     tools: ToolDefinition[];
     apiView: AgentMessage[];
     canonicalMessages: RunMessage[];
-    memory: Record<string, unknown>;
+    memory: unknown;
     contextState?: ContextRuntimeState;
+    querySource?: string;
   }): ContextPrepareResult {
     let state = input.contextState ?? initialContextRuntimeState();
     if (this.shouldTripCompactBreaker(state)) {
@@ -107,6 +114,13 @@ export class ContextOrchestrator {
     let apiView = hydrateToolResultCacheRefs(projected.apiView, state);
     let canonicalMessages = projected.canonical;
     const layerExecutions = [...state.lastLayerExecutions];
+    const pendingDiagnostics: Array<
+      Omit<
+        import("./types").ContextCompactionDiagnostic,
+        "diagnosticId" | "createdAt" | "rehydratedAssetIds"
+      >
+    > = [];
+    let appliedCompactLayer = false;
 
     const mediaStripped = stripMediaFromMessages(apiView);
     if (mediaStripped.some((msg, idx) => msg.content !== apiView[idx]?.content)) {
@@ -132,20 +146,27 @@ export class ContextOrchestrator {
     const toolBudgeted = applyToolResultBudget(apiView, state, this.config);
     apiView = toolBudgeted.messages;
     state = toolBudgeted.nextState;
+    const postToolBudgetTokens = estimateInputTokens({
+      systemPrompt: input.systemPrompt,
+      messages: apiView,
+      tools: input.tools,
+      state,
+    });
+    const postToolBudget = buildBudgetSnapshot(postToolBudgetTokens, this.config);
     layerExecutions.push({
       layer: "tool_result_budget",
       beforeTokens: beforeBudgetTokens,
-      afterTokens: estimateInputTokens({
-        systemPrompt: input.systemPrompt,
-        messages: apiView,
-        tools: input.tools,
-        state,
-      }),
+      afterTokens: postToolBudgetTokens,
       reason: "Always enforce tool result soft budget",
     });
 
-    if (!budget.requiresAutoCompact) {
-      const tokenHeadroom = Math.max(0, budget.autoCompactThreshold - budget.estimatedInputTokens);
+    const shouldSuppressHeavyCompaction = isInternalCompactionSource(input.querySource);
+
+    if (!postToolBudget.requiresAutoCompact) {
+      const tokenHeadroom = Math.max(
+        0,
+        postToolBudget.autoCompactThreshold - postToolBudget.estimatedInputTokens,
+      );
       const restoreTokenBudget = Math.floor(
         tokenHeadroom * clamp01(this.config.collapseRestoreTokenHeadroomRatio),
       );
@@ -172,7 +193,7 @@ export class ContextOrchestrator {
       }
     }
 
-    if (budget.requiresAutoCompact) {
+    if (postToolBudget.requiresAutoCompact && !shouldSuppressHeavyCompaction) {
       const snipped = applyHistorySnip(
         apiView,
         canonicalMessages,
@@ -192,7 +213,12 @@ export class ContextOrchestrator {
         reason: "Crossed auto compact threshold",
       });
 
-      apiView = applyMicrocompact(apiView, this.config.microcompactMaxToolChars, state.roundIndex);
+      apiView = applyMicrocompact(
+        apiView,
+        this.config.microcompactMaxToolChars,
+        state.roundIndex,
+        this.config.microcompactMaxAgeMs,
+      );
       layerExecutions.push({
         layer: "microcompact",
         beforeTokens: budget.estimatedInputTokens,
@@ -238,7 +264,26 @@ export class ContextOrchestrator {
         if (sessionCompacted.preservedSegment) {
           state = storePreservedSegment(state, sessionCompacted.preservedSegment);
         }
-        state = runPostCompactCleanup(state);
+        state = runPostCompactCleanup(state, input.querySource);
+        pendingDiagnostics.push({
+          strategy: "session_memory",
+          source: "prepare",
+          reason: "Fast path from session memory",
+          ...(input.querySource ? { querySource: input.querySource } : {}),
+          beforeTokens: budget.estimatedInputTokens,
+          afterTokens: estimateInputTokens({
+            systemPrompt: input.systemPrompt,
+            messages: apiView,
+            tools: input.tools,
+            state,
+          }),
+          compactedMessageCount: sessionCompacted.compactedMessageCount,
+          boundaryId: sessionCompacted.boundary.boundaryId,
+          ...(sessionCompacted.preservedSegment
+            ? { preservedSegmentId: sessionCompacted.preservedSegment.segmentId }
+            : {}),
+        });
+        appliedCompactLayer = true;
       }
       layerExecutions.push({
         layer: "session_memory_compact",
@@ -273,7 +318,26 @@ export class ContextOrchestrator {
           if (compacted.preservedSegment) {
             state = storePreservedSegment(state, compacted.preservedSegment);
           }
-          state = runPostCompactCleanup(state);
+          state = runPostCompactCleanup(state, input.querySource);
+          pendingDiagnostics.push({
+            strategy: "auto_compact",
+            source: "prepare",
+            reason: "Still above error threshold after light layers",
+            ...(input.querySource ? { querySource: input.querySource } : {}),
+            beforeTokens: postLightBudget,
+            afterTokens: estimateInputTokens({
+              systemPrompt: input.systemPrompt,
+              messages: apiView,
+              tools: input.tools,
+              state,
+            }),
+            compactedMessageCount: compacted.compactedMessageCount,
+            boundaryId: compacted.boundary.boundaryId,
+            ...(compacted.preservedSegment
+              ? { preservedSegmentId: compacted.preservedSegment.segmentId }
+              : {}),
+          });
+          appliedCompactLayer = true;
         } else {
           state = {
             ...state,
@@ -295,6 +359,24 @@ export class ContextOrchestrator {
             afterCanonicalLength < beforeCanonicalLength
               ? "Still above error threshold after light layers"
               : "Auto compact attempted but no effective reduction",
+        });
+      }
+    }
+
+    if (appliedCompactLayer) {
+      const withRehydration = this.appendRehydrationHints(
+        apiView,
+        canonicalMessages,
+        input.memory,
+        state,
+        state.roundIndex + 1,
+      );
+      apiView = withRehydration.apiView;
+      canonicalMessages = withRehydration.canonicalMessages;
+      for (const diagnostic of pendingDiagnostics) {
+        state = recordCompactionDiagnostic(state, {
+          ...diagnostic,
+          rehydratedAssetIds: withRehydration.rehydratedAssetIds,
         });
       }
     }
@@ -328,15 +410,6 @@ export class ContextOrchestrator {
   }): ContextRuntimeState {
     const state = input.contextState ?? initialContextRuntimeState();
     const usage: TokenUsage | undefined = input.response.usage;
-    const extractedSummary =
-      input.response.type === "final"
-        ? buildSessionSummaryFromOutput(input.response.output)
-        : undefined;
-    const nextSessionMemory = mergeSessionMemoryState(
-      state.sessionMemoryState,
-      extractedSummary,
-      state.roundIndex + 1,
-    );
     return {
       ...state,
       roundIndex: state.roundIndex + 1,
@@ -347,7 +420,6 @@ export class ContextOrchestrator {
       ...(input.messageCount !== undefined
         ? { lastUsageAnchorMessageCount: input.messageCount }
         : {}),
-      ...(nextSessionMemory ? { sessionMemoryState: nextSessionMemory } : {}),
     };
   }
 
@@ -355,7 +427,8 @@ export class ContextOrchestrator {
     contextState?: ContextRuntimeState;
     canonicalMessages: RunMessage[];
     reason: "prompt_too_long" | "media_too_large" | "context_overflow" | "max_output_tokens";
-    memory: Record<string, unknown>;
+    memory: unknown;
+    querySource?: string;
   }): ContextErrorRecoveryResult {
     const state = input.contextState ?? initialContextRuntimeState();
     if (
@@ -390,13 +463,23 @@ export class ContextOrchestrator {
 
     const compactBoundary = recovered.canonicalMessages[0]?.compactBoundary;
     let nextState = recovered.nextState;
+    let summaryMessage:
+      | (RunMessage & {
+          preservedSegmentRef?: {
+            segmentId: string;
+            digest: string;
+          };
+        })
+      | undefined;
     if (compactBoundary) {
       nextState = appendCompactBoundary(
         nextState,
         { boundaryId: compactBoundary.boundaryId, strategy: compactBoundary.strategy },
         Math.max(1, input.canonicalMessages.length - recovered.canonicalMessages.length),
       );
-      const summaryMessage = recovered.canonicalMessages.find((m) => m.preservedSegmentRef);
+      summaryMessage =
+        recovered.canonicalMessages.find((m) => m.id.startsWith("summary_")) ??
+        recovered.canonicalMessages.find((m) => m.preservedSegmentRef && !m.compactBoundary);
       if (summaryMessage?.preservedSegmentRef) {
         nextState = storePreservedSegment(nextState, {
           segmentId: summaryMessage.preservedSegmentRef.segmentId,
@@ -410,36 +493,245 @@ export class ContextOrchestrator {
             .map((m) => m.id),
         });
       }
-      nextState = runPostCompactCleanup(nextState);
+      nextState = runPostCompactCleanup(nextState, input.querySource);
     } else {
-      return recovered;
+      nextState = {
+        ...nextState,
+        consecutiveCompactFailures: 0,
+      };
     }
 
-    const hints = buildRehydrationHints({
-      memory: input.memory,
-      rehydrationTokenBudget: this.config.rehydrationTokenBudget,
-      recentFileBudgetTokens: this.config.recentFileBudgetTokens,
-      skillsRehydrateBudgetTokens: this.config.skillsRehydrateBudgetTokens,
-    });
-    const canonicalWithHints = [...recovered.canonicalMessages, ...hints];
+    const withRehydration = this.appendRehydrationHints(
+      recovered.canonicalMessages.map(
+        ({ messageId: _messageId, source: _source, ...message }) => message,
+      ),
+      recovered.canonicalMessages,
+      input.memory,
+      nextState,
+      nextState.roundIndex + 1,
+    );
+    if (compactBoundary) {
+      nextState = recordCompactionDiagnostic(nextState, {
+        strategy: "reactive_compact",
+        source: "recovery",
+        reason: input.reason,
+        ...(input.querySource ? { querySource: input.querySource } : {}),
+        beforeTokens: 0,
+        afterTokens: 0,
+        compactedMessageCount: Math.max(
+          1,
+          input.canonicalMessages.length - recovered.canonicalMessages.length,
+        ),
+        boundaryId: compactBoundary.boundaryId,
+        ...(summaryMessage?.preservedSegmentRef
+          ? { preservedSegmentId: summaryMessage.preservedSegmentRef.segmentId }
+          : {}),
+        rehydratedAssetIds: withRehydration.rehydratedAssetIds,
+      });
+    }
     return {
       recovered: true,
-      canonicalMessages: canonicalWithHints,
+      canonicalMessages: withRehydration.canonicalMessages,
       nextState,
     };
+  }
+
+  compact(input: {
+    systemPrompt: string;
+    tools: ToolDefinition[];
+    apiView: AgentMessage[];
+    canonicalMessages: RunMessage[];
+    memory: unknown;
+    contextState?: ContextRuntimeState;
+    customInstructions?: string;
+  }): ContextPrepareResult {
+    let state = input.contextState ?? initialContextRuntimeState();
+    const projected = projectApiView(input.apiView, input.canonicalMessages, state);
+    let apiView = hydrateToolResultCacheRefs(projected.apiView, state);
+    let canonicalMessages = projected.canonical;
+    const layerExecutions = [...state.lastLayerExecutions];
+    const pendingDiagnostics: Array<
+      Omit<
+        import("./types").ContextCompactionDiagnostic,
+        "diagnosticId" | "createdAt" | "rehydratedAssetIds"
+      >
+    > = [];
+
+    apiView = stripMediaFromMessages(apiView);
+    const toolBudgeted = applyToolResultBudget(apiView, state, this.config);
+    apiView = toolBudgeted.messages;
+    state = toolBudgeted.nextState;
+    apiView = applyMicrocompact(
+      apiView,
+      this.config.microcompactMaxToolChars,
+      state.roundIndex,
+      this.config.microcompactMaxAgeMs,
+    );
+    layerExecutions.push({
+      layer: "microcompact",
+      beforeTokens: 0,
+      afterTokens: 0,
+      reason: "Manual compact pre-pass on cold tool outputs",
+    });
+
+    const sessionCompacted =
+      input.customInstructions === undefined || input.customInstructions.trim().length === 0
+        ? applySessionMemoryCompact(apiView, canonicalMessages, input.memory, state)
+        : {
+            messages: apiView,
+            canonicalMessages,
+            nextState: state,
+            compactedMessageCount: 0,
+          };
+
+    if (sessionCompacted.compactedMessageCount > 0 && sessionCompacted.boundary) {
+      apiView = sessionCompacted.messages;
+      canonicalMessages = sessionCompacted.canonicalMessages;
+      state = appendCompactBoundary(
+        sessionCompacted.nextState,
+        sessionCompacted.boundary,
+        sessionCompacted.compactedMessageCount,
+      );
+      if (sessionCompacted.preservedSegment) {
+        state = storePreservedSegment(state, sessionCompacted.preservedSegment);
+      }
+      state = runPostCompactCleanup(state);
+      pendingDiagnostics.push({
+        strategy: "session_memory",
+        source: "manual",
+        reason: "Manual compact used session memory fast path",
+        beforeTokens: 0,
+        afterTokens: 0,
+        compactedMessageCount: sessionCompacted.compactedMessageCount,
+        boundaryId: sessionCompacted.boundary.boundaryId,
+        ...(sessionCompacted.preservedSegment
+          ? { preservedSegmentId: sessionCompacted.preservedSegment.segmentId }
+          : {}),
+      });
+      layerExecutions.push({
+        layer: "session_memory_compact",
+        beforeTokens: 0,
+        afterTokens: 0,
+        reason: "Manual compact used session memory fast path",
+      });
+    } else {
+      const compacted = applyAutoCompact(apiView, canonicalMessages, "manual_compact", {
+        maxCompactRequestRetries: this.config.maxCompactRequestRetries,
+        compactRequestMaxInputChars: this.config.compactRequestMaxInputChars,
+        historySnipMaxDropRounds: this.config.historySnipMaxDropRounds,
+        ...(input.customInstructions ? { customInstructions: input.customInstructions } : {}),
+      });
+      apiView = compacted.apiView;
+      canonicalMessages = compacted.canonicalMessages;
+      if (compacted.compactedMessageCount > 0 && compacted.boundary) {
+        state = appendCompactBoundary(state, compacted.boundary, compacted.compactedMessageCount);
+        if (compacted.preservedSegment) {
+          state = storePreservedSegment(state, compacted.preservedSegment);
+        }
+        state = runPostCompactCleanup(state);
+        pendingDiagnostics.push({
+          strategy: "manual_compact",
+          source: "manual",
+          reason: "Manual compact forced summary boundary",
+          beforeTokens: 0,
+          afterTokens: 0,
+          compactedMessageCount: compacted.compactedMessageCount,
+          boundaryId: compacted.boundary.boundaryId,
+          ...(compacted.preservedSegment
+            ? { preservedSegmentId: compacted.preservedSegment.segmentId }
+            : {}),
+        });
+      }
+      layerExecutions.push({
+        layer: "auto_compact",
+        beforeTokens: 0,
+        afterTokens: 0,
+        reason: "Manual compact forced summary boundary",
+      });
+    }
+
+    const withRehydration = this.appendRehydrationHints(
+      apiView,
+      canonicalMessages,
+      input.memory,
+      state,
+      state.roundIndex + 1,
+    );
+    apiView = withRehydration.apiView;
+    canonicalMessages = withRehydration.canonicalMessages;
+    for (const diagnostic of pendingDiagnostics) {
+      state = recordCompactionDiagnostic(state, {
+        ...diagnostic,
+        rehydratedAssetIds: withRehydration.rehydratedAssetIds,
+      });
+    }
+
+    const finalBudgetTokens = estimateInputTokens({
+      systemPrompt: input.systemPrompt,
+      messages: apiView,
+      tools: input.tools,
+      state,
+    });
+    const finalBudget = buildBudgetSnapshot(finalBudgetTokens, this.config);
+    const latestBoundaryId = canonicalMessages.find((message) => message.compactBoundary)
+      ?.compactBoundary?.boundaryId;
+    const nextState: ContextRuntimeState = {
+      ...state,
+      ...(latestBoundaryId ? { activeBoundaryId: latestBoundaryId } : {}),
+      lastProjectedApiViewId: `api_${Date.now()}_${state.roundIndex}_${apiView.length}`,
+      lastLayerExecutions: layerExecutions.slice(-30),
+      lastBudget: finalBudget,
+    };
+    return { messages: apiView, canonicalMessages, nextState, budget: finalBudget };
   }
 
   shouldTripCompactBreaker(state?: ContextRuntimeState): boolean {
     const current = state ?? initialContextRuntimeState();
     return current.consecutiveCompactFailures >= this.config.maxConsecutiveCompactFailures;
   }
-}
 
-const buildSessionSummaryFromOutput = (output: string): string | undefined => {
-  const text = output.trim();
-  if (text.length < 80) return undefined;
-  return text.slice(0, 600);
-};
+  private appendRehydrationHints(
+    apiView: AgentMessage[],
+    canonicalMessages: RunMessage[],
+    memory: unknown,
+    state: ContextRuntimeState,
+    roundIndex: number,
+  ): {
+    apiView: AgentMessage[];
+    canonicalMessages: RunMessage[];
+    rehydratedAssetIds: string[];
+  } {
+    const rehydration = resolveRehydrationPlan({
+      memory,
+      assets: Object.values(state.preservedContextAssets ?? {}),
+      rehydrationTokenBudget: this.config.rehydrationTokenBudget,
+      recentFileBudgetTokens: this.config.recentFileBudgetTokens,
+      skillsRehydrateBudgetTokens: this.config.skillsRehydrateBudgetTokens,
+      roundIndex,
+    });
+    const hints = rehydration.messages;
+    if (hints.length === 0) {
+      return { apiView, canonicalMessages, rehydratedAssetIds: [] };
+    }
+
+    const canonicalWithoutPreviousHints = canonicalMessages.filter(
+      (message) => !message.id.startsWith("rehydration_"),
+    );
+    const canonicalWithHints = [...canonicalWithoutPreviousHints, ...hints];
+    const apiWithoutPreviousHints = apiView.filter(
+      (message) => !message.id.startsWith("rehydration_"),
+    );
+    const apiWithHints = [
+      ...apiWithoutPreviousHints,
+      ...hints.map(({ messageId: _messageId, source: _source, ...message }) => message),
+    ];
+    return {
+      apiView: apiWithHints,
+      canonicalMessages: canonicalWithHints,
+      rehydratedAssetIds: rehydration.assetIds,
+    };
+  }
+}
 
 const clamp01 = (value: number): number => {
   if (!Number.isFinite(value)) return 0;
@@ -448,31 +740,9 @@ const clamp01 = (value: number): number => {
   return value;
 };
 
-const mergeSessionMemoryState = (
-  current: ContextRuntimeState["sessionMemoryState"],
-  extractedSummary: string | undefined,
-  nextRoundIndex: number,
-): ContextRuntimeState["sessionMemoryState"] | undefined => {
-  if (!current && !extractedSummary) return undefined;
-  const base = current ?? {};
-  if (!extractedSummary) return base;
-  const shouldUpdateCold = !base.coldSummaryText || nextRoundIndex % 6 === 0;
-  return {
-    ...base,
-    lastSummaryAt: new Date().toISOString(),
-    summarySourceRound: nextRoundIndex,
-    hotSummaryText: extractedSummary,
-    ...(shouldUpdateCold
-      ? {
-          coldSummaryText: mergeColdSummary(base.coldSummaryText, extractedSummary),
-          lastColdSummaryAt: new Date().toISOString(),
-        }
-      : {}),
-  };
-};
-
-const mergeColdSummary = (current: string | undefined, incoming: string): string => {
-  if (!current) return incoming.slice(0, 900);
-  const merged = `${current}\n- ${incoming}`;
-  return merged.slice(-900);
+const isInternalCompactionSource = (querySource: string | undefined): boolean => {
+  if (!querySource) return false;
+  return (
+    querySource === "session_memory" || querySource === "compact" || querySource === "subagent"
+  );
 };

@@ -73,6 +73,9 @@ export class OpenAICompatAdapter extends BaseModelAdapter {
     if (renderedTools.length > 0) body.tools = renderedTools;
     if (request.temperature !== undefined) body.temperature = request.temperature;
     if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
+    if (request.contextMetadata?.contextManagement) {
+      body.context_management = request.contextMetadata.contextManagement;
+    }
 
     return {
       url: this.endpoint,
@@ -92,6 +95,9 @@ export class OpenAICompatAdapter extends BaseModelAdapter {
                 : {}),
               ...(request.contextMetadata?.thresholdLevel
                 ? { contextThresholdLevel: request.contextMetadata.thresholdLevel }
+                : {}),
+              ...(request.contextMetadata?.querySource
+                ? { contextQuerySource: request.contextMetadata.querySource }
                 : {}),
             },
           }),

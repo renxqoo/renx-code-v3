@@ -1,4 +1,10 @@
-import type { AgentMessage, ToolDefinition } from "@renx/model";
+import type {
+  AgentMessage,
+  AgentMessageRole,
+  Metadata,
+  ToolCall,
+  ToolDefinition,
+} from "@renx/model";
 
 // --- Agent-layer message provenance ---
 
@@ -21,6 +27,15 @@ export type MessageSource =
  * `id` (from AgentMessage) is the model/provider-layer identifier.
  */
 export interface RunMessage extends AgentMessage {
+  /** Provider/model-layer identifier, carried through explicitly for stable local typing. */
+  id: string;
+  role: AgentMessageRole;
+  content: string;
+  createdAt: string;
+  name?: string;
+  toolCallId?: string;
+  toolCalls?: ToolCall[];
+  metadata?: Metadata;
   /** Agent-controlled unique identifier. Used for internal logic (dedup, indexing). */
   messageId: string;
   source?: MessageSource;
@@ -43,7 +58,7 @@ export interface RunMessage extends AgentMessage {
    */
   compactBoundary?: {
     boundaryId: string;
-    strategy: "session_memory" | "auto_compact" | "reactive_compact";
+    strategy: "session_memory" | "auto_compact" | "reactive_compact" | "manual_compact";
     createdAt: string;
   };
   /**

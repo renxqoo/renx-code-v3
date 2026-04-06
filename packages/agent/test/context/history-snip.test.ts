@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { AgentMessage } from "@renx/model";
 
 import { applyHistorySnip } from "../../src/context/history-snip";
+import { buildRehydrationHints } from "../../src/context/rehydration";
+import { createMemorySnapshot } from "../../src/memory";
 import type { RunMessage } from "../../src/message/types";
 
 const makeMessage = (
@@ -89,5 +91,89 @@ describe("applyHistorySnip", () => {
     const keptIds = result.canonicalMessages.map((m) => m.id);
     expect(keptIds).toContain("r0_assistant_thinking");
     expect(keptIds).toContain("r4_assistant_text");
+  });
+
+  it("preserves transient api-only context messages while snipping canonical history", () => {
+    const canonical: RunMessage[] = Array.from({ length: 6 }, (_, idx) =>
+      makeMessage(`r${idx}`, idx, idx % 2 === 0 ? "user" : "assistant"),
+    );
+    const transientMemoryMessage: AgentMessage = {
+      id: "memory_only",
+      role: "system",
+      content: '[Agent Memory]\n{"activePlan":"keep me"}',
+      createdAt: new Date().toISOString(),
+    };
+
+    const result = applyHistorySnip([transientMemoryMessage, ...toApi(canonical)], canonical, 3);
+
+    expect(result.canonicalMessages.map((m) => m.id)).not.toContain("memory_only");
+    expect(result.apiView.map((m) => m.id)).toContain("memory_only");
+  });
+
+  it("retains rehydration hint appended after recovery as the newest logical context", () => {
+    const hints = buildRehydrationHints({
+      memory: createMemorySnapshot({
+        working: {
+          activePlan: "keep",
+        },
+      }),
+      rehydrationTokenBudget: 100,
+      recentFileBudgetTokens: 20,
+      skillsRehydrateBudgetTokens: 20,
+      roundIndex: 999,
+    });
+    const canonical: RunMessage[] = [
+      ...Array.from({ length: 6 }, (_, idx) =>
+        makeMessage(`r${idx}`, idx, idx % 2 === 0 ? "user" : "assistant"),
+      ),
+      ...hints,
+    ];
+
+    const result = applyHistorySnip(toApi(canonical), canonical, 1);
+
+    expect(result.canonicalMessages.map((m) => m.id)).toContain(hints[0]!.id);
+  });
+
+  it("retains compact boundary and summary even when they have no roundIndex", () => {
+    const canonical: RunMessage[] = [
+      {
+        id: "boundary_1",
+        messageId: "boundary_1",
+        role: "system",
+        content: "[Compact Boundary:b1]",
+        createdAt: new Date().toISOString(),
+        source: "framework",
+        compactBoundary: {
+          boundaryId: "b1",
+          strategy: "auto_compact",
+          createdAt: new Date().toISOString(),
+        },
+        preservedSegmentRef: {
+          segmentId: "s1",
+          digest: "d1",
+        },
+      },
+      {
+        id: "summary_1",
+        messageId: "summary_1",
+        role: "system",
+        content: "[Compact Summary:s1]\nsummary",
+        createdAt: new Date().toISOString(),
+        source: "framework",
+        preservedSegmentRef: {
+          segmentId: "s1",
+          digest: "d1",
+        },
+      },
+      ...Array.from({ length: 6 }, (_, idx) =>
+        makeMessage(`r${idx}`, idx + 10, idx % 2 === 0 ? "user" : "assistant"),
+      ),
+    ];
+
+    const result = applyHistorySnip(toApi(canonical), canonical, 2);
+    const keptIds = result.canonicalMessages.map((m) => m.id);
+
+    expect(keptIds).toContain("boundary_1");
+    expect(keptIds).toContain("summary_1");
   });
 });

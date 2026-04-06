@@ -23,6 +23,7 @@ import {
   type AgentInput,
   type AgentResult,
   type AgentRunContext,
+  type AgentState,
   type AgentStreamEvent,
   type AgentTool,
   type PolicyEngine,
@@ -32,8 +33,16 @@ import {
 } from "@renx/agent";
 import type { ToolResult } from "@renx/agent";
 import { z } from "zod";
+import { createOpenAIProvider } from "@renx/provider";
+import { createOpenRouterProvider } from "@renx/provider";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * 非「主线程」标识时，{@link RuntimeContextService} 不会附加 Claude 风格的 `context_management`。
+ * MiniMax OpenAI 兼容接口遇到该字段常报 2013 invalid chat setting。
+ */
+const MINIMAX_DEMO_QUERY_SOURCE = "desktop_demo_peripheral";
 
 const IS_MAC = os.platform() === "darwin";
 const MAX_TOOL_OUTPUT_CHARS = 20_000;
@@ -492,6 +501,20 @@ class PersonalDesktopAssistantAgent extends AgentBase {
   protected getMaxSteps() {
     return 100000;
   }
+
+  protected override async createResumeContext(record: {
+    runId: string;
+    state: AgentState;
+  }): Promise<AgentRunContext> {
+    const ctx = await super.createResumeContext(record);
+    return {
+      ...ctx,
+      metadata: {
+        ...ctx.metadata,
+        querySource: MINIMAX_DEMO_QUERY_SOURCE,
+      },
+    };
+  }
 }
 
 interface CliOptions {
@@ -590,9 +613,32 @@ function printEvent(event: AgentStreamEvent): void {
 
 function sanitizeConversationHistory(messages: AgentInput["messages"]): AgentInput["messages"] {
   if (!messages || messages.length === 0) return [];
-  // MiniMax 对历史 messages 中的 system 角色兼容性较弱，
-  // 这里仅保留 user/assistant/tool，系统指令统一由 systemPrompt 提供。
-  return messages.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool");
+  // MiniMax：多条 role=system（与顶栏 systemPrompt 叠加）易触发 2013；历史里不要留 system。
+  const allowed = messages.filter(
+    (m) => m.role === "user" || m.role === "assistant" || m.role === "tool",
+  );
+  const seen = new Set<string>();
+  const deduped: AgentInput["messages"] = [];
+  for (const message of allowed) {
+    const key = String(
+      (message as { messageId?: string }).messageId ??
+        `${message.role}:${message.id ?? message.createdAt ?? ""}`,
+    );
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    if (message.role === "assistant" && typeof message.content === "string") {
+      const cleaned = stripThinkBlocks(message.content);
+      deduped.push(cleaned === message.content ? message : { ...message, content: cleaned });
+      continue;
+    }
+    deduped.push(message);
+  }
+  return deduped;
+}
+
+function stripThinkBlocks(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>\s*/gi, "").trimStart();
 }
 
 async function runOnce(
@@ -601,11 +647,12 @@ async function runOnce(
   history: AgentInput["messages"],
 ): Promise<AgentResult> {
   const sanitizedHistory = sanitizeConversationHistory(history);
+  const now = Date.now();
   const nextMessages = [
     ...(sanitizedHistory ?? []),
     {
-      id: `user_${Date.now()}`,
-      messageId: `msg_user_${Date.now()}`,
+      id: `user_${now}`,
+      messageId: `msg_user_${now}`,
       role: "user" as const,
       content: prompt,
       createdAt: new Date().toISOString(),
@@ -614,6 +661,7 @@ async function runOnce(
   ];
   const stream = agent.stream({
     messages: nextMessages,
+    metadata: { querySource: MINIMAX_DEMO_QUERY_SOURCE },
   });
 
   while (true) {
@@ -729,21 +777,20 @@ function createClientAndModel(): {
   client: ReturnType<typeof createModelClient>;
   modelName: string;
 } {
-  const preferredModel = process.env["DESKTOP_AGENT_MODEL"];
-  const minimaxApiKey = process.env["MINIMAX_API_KEY"];
-  if (minimaxApiKey) {
+  // const preferredModel = process.env["DESKTOP_AGENT_MODEL"];
+  const openrouterApiKey = process.env["OPENROUTER_API_KEY"];
+  if (openrouterApiKey) {
     return {
       client: createModelClient({
         providers: [
-          createMiniMaxProvider({
-            apiKey: minimaxApiKey,
+          createOpenRouterProvider({
+            apiKey: openrouterApiKey,
             timeoutMs: 120_000,
-            baseURL: "https://api.minimaxi.com/v1",
           }),
         ],
         retry: { maxAttempts: 3, baseDelayMs: 1000 },
       }),
-      modelName: preferredModel ?? "minimax:MiniMax-M2.7-highspeed",
+      modelName: "openrouter:qwen/qwen3.6-plus:free",
     };
   }
 

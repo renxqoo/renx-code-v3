@@ -1,0 +1,29 @@
+{
+  "name": "@renx/cli",
+  "version": "0.0.0",
+  "private": true,
+  "bin": {
+    "renx-code": "dist/bin/index.js"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-package.mjs",
+    "clean": "node ../../scripts/clean-package.mjs",
+    "dev": "tsx src/bin/index.ts"
+  },
+  "dependencies": {
+    "@renx/agent": "workspace:*",
+    "@renx/agent-tools": "workspace:*",
+    "@renx/coding-agent": "workspace:*",
+    "@renx/model": "workspace:*",
+    "@renx/provider": "workspace:*"
+  }
+}

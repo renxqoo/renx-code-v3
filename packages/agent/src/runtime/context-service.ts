@@ -1,10 +1,12 @@
 import type { ModelClient, ModelRequest, ToolDefinition } from "@renx/model";
 
 import { formatCompactSummary, getCompactPrompt } from "../context/summary-prompt";
-import type { ContextRuntimeState } from "../context/types";
+import { SessionMemoryService } from "../context/session-memory";
+import { markPostCompactTurnStarted } from "../context/persistence";
+import type { ContextRuntimeState, EffectiveRequestSnapshot } from "../context/types";
 import { ContextOrchestrator } from "../context";
 import type { DefaultMessageManager } from "../message/manager";
-import type { AgentRunContext, AgentStatePatch } from "../types";
+import type { AgentRunContext, AgentStatePatch, ContextLifecycleHooks } from "../types";
 
 import { RuntimeAuditService } from "./audit-service";
 import {
@@ -23,8 +25,10 @@ export class RuntimeContextService {
     private readonly modelClient: ModelClient,
     private readonly model: string,
     private readonly systemPrompt: string,
+    private readonly sessionMemoryService: SessionMemoryService | undefined,
     private readonly patchState: PatchState,
     private readonly audit: RuntimeAuditService,
+    private readonly lifecycleHooks: ContextLifecycleHooks | undefined,
   ) {}
 
   async prepareStepContext(
@@ -36,8 +40,19 @@ export class RuntimeContextService {
     preparedContext: ReturnType<ContextOrchestrator["prepare"]>;
     modelRequest: ModelRequest;
   }> {
+    ctx = await this.hydrateSessionMemoryIfNeeded(ctx);
     const effectiveMessages = this.messageManager.buildEffectiveMessages(ctx);
     const previousLayerCount = ctx.state.context?.lastLayerExecutions.length ?? 0;
+    const querySource = getQuerySource(ctx);
+    const budgetReason = this.shouldSignalBeforeCompact(ctx);
+    if (budgetReason) {
+      await this.lifecycleHooks?.beforeCompact?.({
+        runId: ctx.state.runId,
+        source: "prepare",
+        reason: budgetReason,
+        ...(querySource ? { querySource } : {}),
+      });
+    }
     const preparedContext = this.contextOrchestrator.prepare({
       systemPrompt: this.systemPrompt,
       tools: toolDefs,
@@ -45,11 +60,13 @@ export class RuntimeContextService {
       canonicalMessages: ctx.state.messages,
       memory: ctx.state.memory,
       ...(ctx.state.context ? { contextState: ctx.state.context } : {}),
+      ...(querySource ? { querySource } : {}),
     });
     if (preparedContext.canonicalMessages) {
       ctx = this.patchState(ctx, { replaceMessages: preparedContext.canonicalMessages });
     }
     ctx = this.patchState(ctx, { setContext: preparedContext.nextState });
+    ctx = await this.emitAfterCompactHooks(ctx, previousLayerCount);
     this.audit.emitContextPreparation(ctx, preparedContext.budget, previousLayerCount);
 
     let effectivePrepared = preparedContext;
@@ -73,11 +90,16 @@ export class RuntimeContextService {
       });
     }
 
+    const thresholdLevel = toThresholdLevel(effectivePrepared.budget);
+    const contextManagement = buildContextManagement(querySource, thresholdLevel);
     const modelRequest: ModelRequest = {
       model: this.model,
       systemPrompt: this.systemPrompt,
       messages: effectivePrepared.messages,
       tools: toolDefs,
+      ...(ctx.state.context?.forkedCachePrefix
+        ? { metadata: { compactCachePrefix: ctx.state.context.forkedCachePrefix } }
+        : {}),
       ...(signal ? { signal } : {}),
     };
     (modelRequest as ModelRequestWithContextMetadata).contextMetadata = {
@@ -87,24 +109,63 @@ export class RuntimeContextService {
       ...(effectivePrepared.nextState.activeBoundaryId
         ? { compactBoundaryId: effectivePrepared.nextState.activeBoundaryId }
         : {}),
-      thresholdLevel: toThresholdLevel(effectivePrepared.budget),
+      thresholdLevel,
+      ...(querySource ? { querySource } : {}),
+      ...(contextManagement ? { contextManagement } : {}),
     };
+    const contextMetadata = (modelRequest as ModelRequestWithContextMetadata).contextMetadata;
+    const effectiveSnapshot: EffectiveRequestSnapshot = {
+      capturedAt: new Date().toISOString(),
+      systemPrompt: this.systemPrompt,
+      messages: effectivePrepared.messages,
+      toolNames: toolDefs.map((tool) => tool.name),
+      ...(contextMetadata ? { contextMetadata: contextMetadata as Record<string, unknown> } : {}),
+    };
+    let nextContextState: ContextRuntimeState = {
+      ...ctx.state.context!,
+      lastEffectiveRequestSnapshot: effectiveSnapshot,
+    };
+    if (
+      nextContextState.pendingPostCompactLifecycle &&
+      !nextContextState.pendingPostCompactLifecycle.startedAt
+    ) {
+      const diagnostic = (nextContextState.compactionDiagnostics ?? []).find(
+        (entry) =>
+          entry.diagnosticId === nextContextState.pendingPostCompactLifecycle?.diagnosticId,
+      );
+      if (diagnostic) {
+        await this.lifecycleHooks?.onPostCompactTurnStart?.({
+          runId: ctx.state.runId,
+          diagnostic,
+        });
+        nextContextState = markPostCompactTurnStarted(nextContextState);
+      }
+    }
+    ctx = this.patchState(ctx, { setContext: nextContextState });
 
     return { ctx, preparedContext: effectivePrepared, modelRequest };
   }
 
-  tryRecoverFromModelError(
+  async tryRecoverFromModelError(
     ctx: AgentRunContext,
     error: unknown,
-  ): { recovered: false } | { recovered: true; ctx: AgentRunContext } {
+  ): Promise<{ recovered: false } | { recovered: true; ctx: AgentRunContext }> {
     const recoveryReason = getReactiveRecoveryReason(error);
     if (!recoveryReason) return { recovered: false };
 
+    const querySource = getQuerySource(ctx);
+    await this.lifecycleHooks?.beforeCompact?.({
+      runId: ctx.state.runId,
+      source: "recovery",
+      reason: recoveryReason,
+      ...(querySource ? { querySource } : {}),
+    });
     const recovered = this.contextOrchestrator.onReactiveRecovery({
       canonicalMessages: ctx.state.messages,
       reason: recoveryReason,
       memory: ctx.state.memory,
       ...(ctx.state.context ? { contextState: ctx.state.context } : {}),
+      ...(querySource ? { querySource } : {}),
     });
     if (!recovered.recovered) return { recovered: false };
 
@@ -112,6 +173,10 @@ export class RuntimeContextService {
       replaceMessages: recovered.canonicalMessages,
       setContext: recovered.nextState,
     });
+    await this.emitAfterCompactHooks(
+      nextCtx,
+      ctx.state.context?.compactionDiagnostics?.length ?? 0,
+    );
     this.audit.emit(nextCtx, {
       type: "context_recovery_retry",
       payload: { reason: recoveryReason, retryCount: recovered.nextState.promptTooLongRetries },
@@ -148,7 +213,7 @@ export class RuntimeContextService {
         {
           id: `compact_req_${Date.now()}`,
           role: "user",
-          content: `${getCompactPrompt()}\n\nConversation to summarize:\n${summaryMessage.content}`,
+          content: `${getCompactPrompt()}\n\nConversation to summarize:\n${getCompactSummarySource(summaryMessage)}`,
           createdAt: new Date().toISOString(),
         },
       ],
@@ -201,6 +266,7 @@ export class RuntimeContextService {
       setContext: nextContext,
     });
 
+    const querySource = getQuerySource(ctx);
     const refreshed = this.contextOrchestrator.prepare({
       systemPrompt: this.systemPrompt,
       tools: toolDefs,
@@ -208,6 +274,7 @@ export class RuntimeContextService {
       canonicalMessages: ctx.state.messages,
       memory: ctx.state.memory,
       ...(ctx.state.context ? { contextState: ctx.state.context } : {}),
+      ...(querySource ? { querySource } : {}),
     });
     ctx = this.patchState(ctx, {
       ...(refreshed.canonicalMessages ? { replaceMessages: refreshed.canonicalMessages } : {}),
@@ -215,4 +282,107 @@ export class RuntimeContextService {
     });
     return { ctx, preparedContext: refreshed };
   }
+
+  private async hydrateSessionMemoryIfNeeded(ctx: AgentRunContext): Promise<AgentRunContext> {
+    if (!this.sessionMemoryService) return ctx;
+    if (ctx.state.context?.sessionMemoryState?.notes) {
+      return ctx;
+    }
+    return {
+      ...ctx,
+      state: await this.sessionMemoryService.hydrateState(ctx.state.runId, ctx.state, {
+        waitForPendingExtraction: true,
+      }),
+    };
+  }
+
+  private shouldSignalBeforeCompact(ctx: AgentRunContext): string | null {
+    const budget = ctx.state.context?.lastBudget;
+    if (!budget) return null;
+    if (budget.requiresAutoCompact) return "auto_compact_threshold";
+    if (budget.shouldBlock) return "blocking_threshold";
+    return null;
+  }
+
+  private async emitAfterCompactHooks(
+    ctx: AgentRunContext,
+    previousDiagnosticsLength: number,
+  ): Promise<AgentRunContext> {
+    const diagnostics = ctx.state.context?.compactionDiagnostics ?? [];
+    if (diagnostics.length <= previousDiagnosticsLength) return ctx;
+    const nextDiagnostics = diagnostics.slice(previousDiagnosticsLength);
+    for (const diagnostic of nextDiagnostics) {
+      await this.lifecycleHooks?.afterCompact?.({
+        runId: ctx.state.runId,
+        diagnostic,
+      });
+    }
+    return ctx;
+  }
 }
+
+const getQuerySource = (ctx: AgentRunContext): string | undefined => {
+  const querySource = ctx.metadata?.["querySource"];
+  return typeof querySource === "string" && querySource.length > 0 ? querySource : undefined;
+};
+
+const getCompactSummarySource = (summaryMessage: {
+  content: string;
+  metadata?: Record<string, unknown>;
+}): string => {
+  const compactSource = summaryMessage.metadata?.["compactSource"];
+  return typeof compactSource === "string" && compactSource.trim().length > 0
+    ? compactSource
+    : summaryMessage.content;
+};
+
+const buildContextManagement = (
+  querySource: string | undefined,
+  thresholdLevel: "healthy" | "warning" | "auto_compact" | "error" | "blocking",
+):
+  | {
+      edits: Array<
+        | {
+            type: "clear_tool_uses_20250919";
+            trigger?: { type: "input_tokens"; value: number };
+            clear_tool_inputs?: boolean | string[];
+            exclude_tools?: string[];
+            clear_at_least?: { type: "input_tokens"; value: number };
+          }
+        | {
+            type: "clear_thinking_20251015";
+            keep: { type: "thinking_turns"; value: number } | "all";
+          }
+      >;
+    }
+  | undefined => {
+  const isMainThread =
+    !querySource || querySource === "sdk" || querySource.startsWith("repl_main_thread");
+  if (!isMainThread || thresholdLevel === "healthy") return undefined;
+
+  return {
+    edits: [
+      {
+        type: "clear_tool_uses_20250919",
+        trigger: { type: "input_tokens", value: 180_000 },
+        clear_at_least: { type: "input_tokens", value: 140_000 },
+        clear_tool_inputs: [
+          "bash",
+          "read",
+          "read_file",
+          "grep",
+          "glob",
+          "web_fetch",
+          "web_search",
+          "shell",
+        ],
+      },
+      {
+        type: "clear_tool_uses_20250919",
+        trigger: { type: "input_tokens", value: 180_000 },
+        clear_at_least: { type: "input_tokens", value: 140_000 },
+        exclude_tools: ["edit", "write", "notebook_edit"],
+      },
+    ],
+  };
+};

@@ -1,4 +1,4 @@
-import type { Metadata, ModelResponse, ToolCall } from "@renx/model";
+import type { AgentMessage, Metadata, ModelResponse, ToolCall } from "@renx/model";
 
 // Re-export commonly used types from @renx/model
 export type { Metadata } from "@renx/model";
@@ -6,7 +6,13 @@ export type { Metadata } from "@renx/model";
 import type { AgentError } from "./errors";
 import type { AgentTool, ToolResult } from "./tool/types";
 import type { RunMessage } from "./message/types";
-import type { ContextRuntimeState } from "./context/types";
+import type {
+  ContextCompactionDiagnostic,
+  ContextRuntimeState,
+  EffectiveRequestSnapshot,
+} from "./context/types";
+import type { MemorySnapshot, MemorySubsystem } from "./memory";
+import type { SkillsSubsystem } from "./skills/types";
 
 // Re-export tool types needed by other modules
 export type {
@@ -30,7 +36,7 @@ export interface AgentState {
   threadId?: string;
   messages: RunMessage[];
   scratchpad: Metadata;
-  memory: Metadata;
+  memory: MemorySnapshot;
   stepCount: number;
   status: AgentStatus;
   lastModelResponse?: ModelResponse;
@@ -46,7 +52,7 @@ export interface AgentStatePatch {
   appendMessages?: RunMessage[];
   replaceMessages?: RunMessage[];
   setScratchpad?: Metadata;
-  mergeMemory?: Metadata;
+  mergeMemory?: MemorySnapshot;
   setContext?: ContextRuntimeState;
   setStatus?: AgentStatus;
   setError?: AgentError;
@@ -65,7 +71,7 @@ export interface AgentIdentity {
 
 export interface AgentInput {
   messages?: RunMessage[];
-  inputText?: string;
+  context?: unknown;
   metadata?: Metadata;
   signal?: AbortSignal;
 }
@@ -78,6 +84,129 @@ export interface TimelineStore {
   listNodes(runId: string): Promise<TimelineNode[]>;
   save(node: TimelineNode, expectedVersion?: number): Promise<number>;
   delete?(runId: string): Promise<void>;
+}
+
+export interface SessionMemoryRecord {
+  template: string;
+  notes: string;
+  initialized: boolean;
+  tokensAtLastExtraction: number;
+  lastExtractionMessageId?: string;
+  lastSummarizedMessageId?: string;
+  lastExtractedAt?: string;
+  extractionStartedAt?: string;
+  summarySourceRound?: number;
+}
+
+export interface SessionMemoryConfig {
+  minimumTokensToInit: number;
+  minimumTokensBetweenUpdates: number;
+  toolCallsBetweenUpdates: number;
+  extractMaxTokens: number;
+  extractionWaitTimeoutMs: number;
+  extractionStaleAfterMs: number;
+  extractionPollIntervalMs: number;
+  maxUpdateMessages: number;
+  maxMessageChars: number;
+}
+
+export interface SessionMemoryStore {
+  load(runId: string): Promise<SessionMemoryRecord | null> | SessionMemoryRecord | null;
+  save(runId: string, record: SessionMemoryRecord): Promise<void> | void;
+}
+
+export type SessionMemoryMode = "sync" | "deferred";
+
+export interface SessionMemoryExtractionInput {
+  runId: string;
+  notesPath: string;
+  record: SessionMemoryRecord;
+  conversation: RunMessage[];
+  prompt: string;
+  config: SessionMemoryConfig;
+  signal?: AbortSignal;
+}
+
+export interface SessionMemoryExtractionResult {
+  notes: string;
+}
+
+export interface SessionMemoryExtractor {
+  extract(
+    input: SessionMemoryExtractionInput,
+  ): Promise<SessionMemoryExtractionResult> | SessionMemoryExtractionResult;
+}
+
+export interface SessionMemoryEvent {
+  type:
+    | "session_memory_initialized"
+    | "session_memory_extraction_started"
+    | "session_memory_extraction_completed"
+    | "session_memory_extraction_failed"
+    | "session_memory_extraction_skipped";
+  runId: string;
+  timestamp: string;
+  payload: Record<string, unknown>;
+}
+
+export interface SessionMemoryHooks {
+  onEvent(event: SessionMemoryEvent): Promise<void> | void;
+}
+
+export interface SessionMemoryPromptInput {
+  notesPath: string;
+  currentNotes: string;
+  conversation: RunMessage[];
+  record: SessionMemoryRecord;
+  config: SessionMemoryConfig;
+}
+
+export interface SessionMemorySubsystem {
+  store: SessionMemoryStore;
+  extractor?: SessionMemoryExtractor;
+  config?: Partial<SessionMemoryConfig>;
+  mode?: SessionMemoryMode;
+  template?: string;
+  promptBuilder?: (input: SessionMemoryPromptInput) => string;
+  hooks?: SessionMemoryHooks;
+}
+
+export interface AgentResumeSnapshot {
+  runId: string;
+  nodeId: string;
+  mode: "head" | "node";
+  state: AgentState;
+  apiView: AgentMessage[];
+  effectiveRequest?: EffectiveRequestSnapshot;
+  diagnostics: ContextCompactionDiagnostic[];
+  createdAt: string;
+}
+
+export interface ContextLifecycleHooks {
+  beforeCompact?(event: {
+    runId: string;
+    source: "prepare" | "manual" | "recovery";
+    reason: string;
+    querySource?: string;
+  }): Promise<void> | void;
+  afterCompact?(event: {
+    runId: string;
+    diagnostic: ContextCompactionDiagnostic;
+  }): Promise<void> | void;
+  beforeResume?(event: {
+    runId: string;
+    nodeId: string;
+    mode: "head" | "node";
+  }): Promise<void> | void;
+  afterResume?(snapshot: AgentResumeSnapshot): Promise<void> | void;
+  onPostCompactTurnStart?(event: {
+    runId: string;
+    diagnostic: ContextCompactionDiagnostic;
+  }): Promise<void> | void;
+  onPostCompactTurnComplete?(event: {
+    runId: string;
+    diagnostic: ContextCompactionDiagnostic;
+  }): Promise<void> | void;
 }
 
 export type ResumeAtMode = "fork" | "fast_forward" | "read_only_preview";
@@ -203,6 +332,9 @@ export interface AgentServices {
   audit?: AuditLogger;
   approvalEngine?: ApprovalEngine;
   recovery?: RecoveryConfig;
+  memory?: MemorySubsystem;
+  sessionMemory?: SessionMemorySubsystem;
+  skills?: SkillsSubsystem;
 }
 
 export interface AgentRunContext {
@@ -220,6 +352,18 @@ export interface AgentResult {
   status: AgentStatus;
   output?: string;
   error?: AgentError;
+  state: AgentState;
+  messages?: RunMessage[];
+  structuredResponse?: unknown;
+}
+
+export interface AgentCompactOptions {
+  customInstructions?: string;
+}
+
+export interface AgentCompactResult {
+  runId: string;
+  compacted: boolean;
   state: AgentState;
 }
 

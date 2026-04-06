@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import type { AgentRunContext, ToolContext } from "@renx/agent";
 import { LocalBackend } from "@renx/agent";
@@ -38,6 +39,11 @@ function minimalCtx(backend: ToolContext["backend"]): ToolContext {
   };
   return { runContext, toolCall, backend };
 }
+
+const getSchemaKeys = (schema: unknown): string[] => {
+  expect(schema).toBeInstanceOf(z.ZodObject);
+  return Object.keys((schema as z.ZodObject<any>).shape);
+};
 
 describe("splitShellSegments", () => {
   it("splits on && and respects single quotes", () => {
@@ -110,8 +116,25 @@ describe("createBashTool isReadOnly hint", () => {
 });
 
 describe("createBashTool", () => {
-  it("returns structured exec result when backend supports exec", async () => {
-    const tool = createBashTool({ defaultTimeoutMs: 5_000, maxTimeoutMs: 10_000 });
+  it("exposes Claude-style schema fields", () => {
+    const tool = createBashTool();
+    expect(getSchemaKeys(tool.schema)).toEqual([
+      "command",
+      "timeout",
+      "description",
+      "run_in_background",
+      "dangerouslyDisableSandbox",
+    ]);
+  });
+
+  it("returns structured exec result and forwards timeout with internal cwd resolution", async () => {
+    const root = mkdtempSync(join(tmpdir(), "renx-bash-exec-"));
+    const calls: Array<{ command: string; opts?: { cwd?: string; timeoutMs?: number } }> = [];
+    const tool = createBashTool({
+      defaultTimeoutMs: 5_000,
+      maxTimeoutMs: 10_000,
+      resolveCwd: () => root,
+    });
     const backend = {
       kind: "test",
       capabilities: () => ({
@@ -119,15 +142,26 @@ describe("createBashTool", () => {
         filesystemRead: false,
         filesystemWrite: false,
       }),
-      exec: async (command: string) => ({
-        stdout: `ran:${command}`,
-        stderr: "",
-        exitCode: 0,
-      }),
+      exec: async (command: string, opts?: { cwd?: string; timeoutMs?: number }) => {
+        calls.push({
+          command,
+          ...(opts ? { opts } : {}),
+        });
+        return {
+          stdout: `ran:${command}`,
+          stderr: "",
+          exitCode: 0,
+        };
+      },
     };
-    const out = await tool.invoke({ command: "echo hello" }, minimalCtx(backend));
-    expect(out.structured).toMatchObject({ exitCode: 0, stdout: "ran:echo hello" });
-    expect(out.content).toContain("ran:echo hello");
+    try {
+      const out = await tool.invoke({ command: "echo hello", timeout: 4_000 }, minimalCtx(backend));
+      expect(calls).toEqual([{ command: "echo hello", opts: { cwd: root, timeoutMs: 4_000 } }]);
+      expect(out.structured).toMatchObject({ exitCode: 0, stdout: "ran:echo hello" });
+      expect(out.content).toContain("ran:echo hello");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("explains missing backend instead of throwing", async () => {
@@ -160,6 +194,7 @@ describe("createBashTool", () => {
       mkdirSync(inner);
       const tool = createBashTool({
         pathPolicy: { workspaceRoot: inner, allowRedirectOutsideWorkspace: false },
+        resolveCwd: () => inner,
       });
       const backend = {
         kind: "test",
@@ -171,7 +206,7 @@ describe("createBashTool", () => {
         exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
       };
       const out = await tool.invoke(
-        { command: `echo hi > "${join(root, "escape.txt")}"`, cwd: inner },
+        { command: `echo hi > "${join(root, "escape.txt")}"` },
         minimalCtx(backend),
       );
       expect(out.metadata).toMatchObject({ blocked: true, code: "REDIRECT_OUTSIDE_WORKSPACE" });
@@ -226,14 +261,17 @@ describe.skipIf(platform !== "win32")("createBashTool Windows integration (Local
     expect(String(st?.stdout ?? "")).toContain("renx-win-bash-test");
   }, 60_000);
 
-  it("optional cwd: lists only temp folder contents", async () => {
+  it("internally resolved cwd lists only temp folder contents", async () => {
     const root = mkdtempSync(join(tmpdir(), "renx-bash-win-"));
     try {
       writeFileSync(join(root, "marker.txt"), "x", "utf-8");
-      const out = await winPsTool().invoke(
-        { command: "Get-ChildItem -Name", cwd: root },
-        minimalCtx(backend),
-      );
+      const tool = createBashTool({
+        defaultTimeoutMs: 30_000,
+        maxTimeoutMs: 60_000,
+        treeSitter: { enabled: false },
+        resolveCwd: () => root,
+      });
+      const out = await tool.invoke({ command: "Get-ChildItem -Name" }, minimalCtx(backend));
       const st = out.structured as { exitCode?: number; stdout?: string } | undefined;
       expect(st?.exitCode).toBe(0);
       expect(String(st?.stdout ?? "")).toContain("marker.txt");

@@ -81,6 +81,8 @@ export const restoreCollapsedContext = (
     ...restoredMiddle,
     ...messages.slice(collapseIdx + 1),
   ];
+  const nextSegments = { ...collapseState.segments };
+  delete nextSegments[segmentId];
   return {
     messages: nextMessages,
     restored: true,
@@ -88,7 +90,9 @@ export const restoreCollapsedContext = (
       ...state,
       contextCollapseState: {
         ...collapseState,
+        collapsedMessageIds: [],
         lastRestoredAt: new Date().toISOString(),
+        segments: nextSegments,
       },
     },
   };

@@ -1,6 +1,11 @@
 // Client
-export { createModelClient, createPrefixResolver, createInferResolver } from "./client";
-export type { CreateModelClientOptions } from "./client";
+export {
+  createInferResolver,
+  createModelClient,
+  createPrefixResolver,
+  createProviderModelBinding,
+} from "./client";
+export type { CreateModelClientOptions, CreateProviderModelBindingOptions } from "./client";
 
 // Provider factories
 export { createOpenAIProvider } from "./openai";

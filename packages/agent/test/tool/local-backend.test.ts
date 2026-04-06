@@ -17,6 +17,8 @@ describe("LocalBackend", () => {
         filesystemRead: true,
         filesystemWrite: true,
         network: true,
+        binaryRead: true,
+        pathMetadata: true,
       });
     });
   });
@@ -85,6 +87,20 @@ describe("LocalBackend", () => {
     });
   });
 
+  describe("readBinaryFile()", () => {
+    it("reads binary file content", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "local-backend-binary-"));
+      try {
+        const filePath = join(dir, "image.bin");
+        await writeFile(filePath, Buffer.from([0x00, 0x01, 0x02, 0x03]));
+        const content = await backend.readBinaryFile(filePath);
+        expect([...content]).toEqual([0, 1, 2, 3]);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe("writeFile()", () => {
     it("writes a file", async () => {
       const dir = await mkdtemp(join(tmpdir(), "local-backend-write-"));
@@ -117,6 +133,24 @@ describe("LocalBackend", () => {
           expect(entry.isDirectory).toBe(false);
           expect(typeof entry.size).toBe("number");
         }
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("statPath()", () => {
+    it("returns file metadata when the path exists", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "local-backend-stat-"));
+      try {
+        const filePath = join(dir, "meta.txt");
+        await writeFile(filePath, "content", "utf-8");
+        const info = await backend.statPath(filePath);
+        expect(info).toMatchObject({
+          path: filePath,
+          isDirectory: false,
+          size: 7,
+        });
       } finally {
         await rm(dir, { recursive: true, force: true });
       }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ModelAdapter } from "../src/adapter";
-import { createModelClient } from "../src/client";
+import { createModelBinding, createModelClient } from "../src/client";
 
 describe("createModelClient", () => {
   it("lets callers generate with a logical model name directly", async () => {
@@ -100,6 +100,33 @@ describe("createModelClient", () => {
       logicalModel: "glm-5",
       provider: "zhipu",
       providerModel: "glm-5",
+    });
+  });
+
+  it("creates a model binding for higher-level agent assembly", () => {
+    const adapter: ModelAdapter = {
+      name: "openai",
+      async generate() {
+        return {
+          type: "final",
+          output: "ok",
+        };
+      },
+    };
+    const client = createModelClient({
+      providers: [{ name: "openai", adapter }],
+      resolveModel(model) {
+        return {
+          id: model,
+          provider: "openai",
+          providerModel: model,
+        };
+      },
+    });
+
+    expect(createModelBinding(client, "gpt-5.4")).toEqual({
+      client,
+      name: "gpt-5.4",
     });
   });
 });

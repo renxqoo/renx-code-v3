@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const cwd = process.cwd();
+const extraArgs = process.argv.slice(2);
 const srcDir = path.join(cwd, "src");
 const entries = [];
 
@@ -31,7 +32,18 @@ if (entries.length === 0) {
 
 const result = spawnSync(
   "pnpm",
-  ["exec", "tsup", ...entries, "--format", "esm", "--sourcemap", "--clean", "--out-dir", "dist"],
+  [
+    "exec",
+    "tsup",
+    ...entries,
+    "--format",
+    "esm",
+    "--sourcemap",
+    "--clean",
+    "--out-dir",
+    "dist",
+    ...extraArgs,
+  ],
   {
     stdio: "inherit",
   },

@@ -84,6 +84,65 @@ describe("ToolExecutor", () => {
     expect(result.result.output.content).toContain('"ok":false');
   });
 
+  it("passes tool input through when schema is omitted", async () => {
+    const registry = new InMemoryToolRegistry();
+    registry.register({
+      name: "schema-less",
+      description: "Accepts arbitrary input",
+      invoke: async (input: unknown): Promise<ToolResult> => ({
+        content: JSON.stringify(input),
+      }),
+    });
+
+    const executor = new ToolExecutor(registry, new MiddlewarePipeline());
+    const schemaLessCall: ToolCall = {
+      id: "tc_schema_less",
+      name: "schema-less",
+      input: { message: "hello" },
+    };
+
+    const result = await executor.run(schemaLessCall, baseCtx());
+    if (result.type !== "completed") {
+      throw new Error("Expected completed result");
+    }
+
+    expect(result.result.output.content).toBe('{"message":"hello"}');
+  });
+
+  it("uses inputJsonSchema validation when zod schema is omitted", async () => {
+    const registry = new InMemoryToolRegistry();
+    registry.register({
+      name: "json-schema-only",
+      description: "Validates via JSON schema",
+      inputJsonSchema: {
+        type: "object",
+        properties: {
+          message: { type: "string" },
+        },
+        required: ["message"],
+        additionalProperties: false,
+      },
+      invoke: async (input: unknown): Promise<ToolResult> => ({
+        content: JSON.stringify(input),
+      }),
+    });
+
+    const executor = new ToolExecutor(registry, new MiddlewarePipeline());
+    const invalidCall: ToolCall = {
+      id: "tc_json_schema_only",
+      name: "json-schema-only",
+      input: { bad: true },
+    };
+
+    const result = await executor.run(invalidCall, baseCtx());
+    if (result.type !== "completed") {
+      throw new Error("Expected completed result");
+    }
+
+    expect(result.result.output.metadata?.["errorCode"]).toBe("VALIDATION_ERROR");
+    expect(result.result.output.content).toContain('"ok":false');
+  });
+
   it("throws for unknown tool", async () => {
     const registry = new InMemoryToolRegistry();
     const executor = new ToolExecutor(registry, new MiddlewarePipeline());
@@ -238,7 +297,7 @@ describe("ToolExecutor", () => {
     expect(capturedBackend).toBe(mockBackend);
   });
 
-  it("ToolContext has correct fields (runContext, toolCall, backend)", async () => {
+  it("ToolContext has correct fields (runContext, toolCall, backend, tools)", async () => {
     let capturedCtx: unknown;
     const registry = new InMemoryToolRegistry();
     registry.register({
@@ -259,10 +318,67 @@ describe("ToolExecutor", () => {
       throw new Error("Expected completed result");
     }
 
-    const toolCtx = capturedCtx as { runContext: unknown; toolCall: unknown; backend: unknown };
+    const toolCtx = capturedCtx as {
+      runContext: unknown;
+      toolCall: unknown;
+      backend: unknown;
+      tools?: {
+        list(): Array<{ name: string }>;
+        get(name: string): { name: string } | undefined;
+        invoke(request: { name: string; input: unknown }): Promise<{ output: { content: string } }>;
+      };
+    };
     expect(toolCtx.runContext).toBe(runCtx);
     expect(toolCtx.toolCall).toBe(call);
     expect(toolCtx.backend).toBeUndefined();
+    expect(toolCtx.tools?.get("echo")?.name).toBe("echo");
+    expect(toolCtx.tools?.list().map((tool) => tool.name)).toEqual(["echo"]);
+  });
+
+  it("allows tools to invoke other tools through the internal tool orchestrator", async () => {
+    const registry = new InMemoryToolRegistry();
+    registry.register({
+      name: "inner",
+      description: "Returns a nested result",
+      schema: z.object({ value: z.string() }),
+      invoke: async (input: unknown): Promise<ToolResult> => {
+        const parsed = z.object({ value: z.string() }).parse(input);
+        return {
+          content: `inner:${parsed.value}`,
+          statePatch: {
+            mergeMemory: {
+              inner_result: parsed.value,
+            },
+          },
+        };
+      },
+    });
+    registry.register({
+      name: "outer",
+      description: "Invokes inner",
+      schema: z.object({}).passthrough(),
+      invoke: async (_input: unknown, ctx): Promise<ToolResult> => {
+        const nested = await ctx.tools!.invoke({
+          name: "inner",
+          input: { value: "ok" },
+        });
+        return {
+          content: nested.output.content,
+          structured: {
+            nested: nested.output.content,
+          },
+        };
+      },
+    });
+
+    const executor = new ToolExecutor(registry, new MiddlewarePipeline());
+    const result = await executor.run({ id: "tc_outer", name: "outer", input: {} }, baseCtx());
+
+    if (result.type !== "completed") {
+      throw new Error("Expected completed result");
+    }
+
+    expect(result.result.output.content).toBe("inner:ok");
   });
 
   describe("runBatch", () => {

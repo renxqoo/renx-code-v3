@@ -1,7 +1,15 @@
 import type { ContextRuntimeState } from "./types";
 
-export const runPostCompactCleanup = (state: ContextRuntimeState): ContextRuntimeState => {
-  const { contextCollapseState: _collapseState, ...restState } = state;
+export const runPostCompactCleanup = (
+  state: ContextRuntimeState,
+  querySource?: string,
+): ContextRuntimeState => {
+  const shouldResetCollapse =
+    !querySource ||
+    querySource === "compact" ||
+    querySource === "sdk" ||
+    querySource.startsWith("repl_main_thread");
+  const { contextCollapseState: collapseState, ...restState } = state;
   const retainedRefs = Object.keys(state.toolResultCache).slice(-50);
   const evictedRefs = Object.keys(state.toolResultCache).slice(
     0,
@@ -15,6 +23,7 @@ export const runPostCompactCleanup = (state: ContextRuntimeState): ContextRuntim
 
   return {
     ...restState,
+    ...(shouldResetCollapse ? {} : { contextCollapseState: collapseState }),
     consecutiveCompactFailures: 0,
     toolResultCache: nextCache,
     toolResultStorageState: {

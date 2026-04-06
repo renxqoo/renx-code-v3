@@ -11,6 +11,8 @@ export default defineConfig({
       "@renx/toolkit": resolve(__dirname, "packages/toolkit/src/index.ts"),
       "@renx/agent": resolve(__dirname, "packages/agent/src/index.ts"),
       "@renx/agent-tools": resolve(__dirname, "packages/agent-tools/src/index.ts"),
+      "@renx/agent-sandbox": resolve(__dirname, "packages/agent-sandbox/src/index.ts"),
+      "@renx/coding-agent": resolve(__dirname, "packages/coding-agent/src/index.ts"),
     },
   },
   test: {

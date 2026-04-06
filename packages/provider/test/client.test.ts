@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createModelClient } from "../src/client";
+import { createModelClient, createProviderModelBinding } from "../src/client";
 import { createGlmProvider } from "../src/glm";
 import { createKimiProvider } from "../src/kimi";
 import { createOpenAIProvider } from "../src/openai";
@@ -189,5 +189,52 @@ describe("@renx/provider createModelClient", () => {
     expect(requests).toHaveLength(1);
     const body = JSON.parse(String(requests[0]?.body ?? "{}")) as Record<string, unknown>;
     expect(body.model).toBe("moonshot-v1-128k");
+  });
+
+  it("creates a provider-backed model binding for agent harnesses", async () => {
+    const requests: RequestInit[] = [];
+    globalThis.fetch = (async (_input: unknown, init?: RequestInit): Promise<Response> => {
+      requests.push(init ?? {});
+
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "bound ok",
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
+
+    const binding = createProviderModelBinding({
+      model: "gpt-5.4",
+      providers: [
+        createOpenAIProvider({
+          apiKey: "test-key",
+          endpoint: "https://api.openai.com/v1/chat/completions",
+        }),
+      ],
+    });
+
+    expect(binding.name).toBe("gpt-5.4");
+    await expect(
+      binding.client.generate({
+        model: binding.name,
+        systemPrompt: "",
+        messages: [],
+        tools: [],
+      }),
+    ).resolves.toEqual({
+      type: "final",
+      output: "bound ok",
+    });
+    expect(requests).toHaveLength(1);
   });
 });

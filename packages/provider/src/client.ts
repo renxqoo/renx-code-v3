@@ -1,5 +1,7 @@
 import {
+  createModelBinding,
   createModelClient as createBaseModelClient,
+  type ModelBinding,
   type ModelClient,
   type ModelProvider,
   type ModelResolver,
@@ -11,6 +13,10 @@ export interface CreateModelClientOptions {
   providers: ModelProvider[];
   resolveModel?: ModelResolver;
   retry?: ModelRetryOptions | false;
+}
+
+export interface CreateProviderModelBindingOptions extends CreateModelClientOptions {
+  model: string;
 }
 
 export const createModelClient = (options: CreateModelClientOptions): ModelClient => {
@@ -26,6 +32,18 @@ export const createModelClient = (options: CreateModelClientOptions): ModelClien
     ...(options.retry === undefined ? {} : { retry: options.retry }),
   });
 };
+
+export const createProviderModelBinding = (
+  options: CreateProviderModelBindingOptions,
+): ModelBinding =>
+  createModelBinding(
+    createModelClient({
+      providers: options.providers,
+      ...(options.resolveModel ? { resolveModel: options.resolveModel } : {}),
+      ...(options.retry !== undefined ? { retry: options.retry } : {}),
+    }),
+    options.model,
+  );
 
 /**
  * Resolver that only accepts explicit "provider:model" format.

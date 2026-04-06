@@ -28,6 +28,16 @@ export const applyHistorySnip = (
   );
   let kept = canonicalMessages.filter((message) => {
     if (baseKept.includes(message)) return true;
+    if (message.compactBoundary) return true;
+    if (
+      message.role === "system" &&
+      (message.id.startsWith("summary_") ||
+        message.id.startsWith("restored_summary_") ||
+        message.id.startsWith("rehydration_") ||
+        message.preservedSegmentRef)
+    ) {
+      return true;
+    }
     if (message.atomicGroupId && atomicGroupIds.has(message.atomicGroupId)) return true;
     if (message.thinkingChunkGroupId && thinkingGroupIds.has(message.thinkingChunkGroupId))
       return true;
@@ -39,8 +49,9 @@ export const applyHistorySnip = (
   kept = expandWithToolPairs(kept, canonicalMessages);
 
   const keptIds = new Set(kept.map((message) => message.id));
+  const canonicalIds = new Set(canonicalMessages.map((message) => message.id));
   return {
-    apiView: apiView.filter((message) => keptIds.has(message.id)),
+    apiView: apiView.filter((message) => keptIds.has(message.id) || !canonicalIds.has(message.id)),
     canonicalMessages: kept,
   };
 };

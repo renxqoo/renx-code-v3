@@ -19,7 +19,10 @@ export const applyToolResultBudget = (
     if (message.content.length <= config.toolResultSoftCharLimit) return message;
 
     const refKey = message.id;
-    toolResultCache[refKey] = message.content;
+    const existingRaw = toolResultCache[refKey];
+    const hydratedFromCache = message.metadata?.["hydratedFromCache"] === true;
+    toolResultCache[refKey] =
+      hydratedFromCache && typeof existingRaw === "string" ? existingRaw : message.content;
     return {
       ...message,
       content: `[tool_result_cache_ref:${refKey}] tool result compacted due to budget`,

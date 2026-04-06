@@ -2,7 +2,15 @@ import type { ModelClient } from "@renx/model";
 
 import type { DefaultMessageManager } from "../message/manager";
 import type { MiddlewarePipeline } from "../middleware/pipeline";
-import type { PolicyEngine, ResumeAtMode, TimelineStore, AuditLogger } from "../types";
+import type {
+  ContextLifecycleHooks,
+  PolicyEngine,
+  ResumeAtMode,
+  TimelineStore,
+  AuditLogger,
+  SessionMemorySubsystem,
+} from "../types";
+import type { MemorySubsystem } from "../memory";
 import type { AgentTool, BackendResolver } from "../tool/types";
 import type { ContextManagerConfig } from "../context/types";
 
@@ -15,6 +23,9 @@ export interface RuntimeConfig {
   messageManager?: DefaultMessageManager;
   policy?: PolicyEngine;
   timeline?: TimelineStore;
+  memory?: MemorySubsystem;
+  sessionMemory?: SessionMemorySubsystem;
+  contextLifecycleHooks?: ContextLifecycleHooks;
   timelineMode?: ResumeAtMode;
   timelineParentNodeId?: string;
   audit?: AuditLogger;

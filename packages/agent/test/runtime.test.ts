@@ -8,8 +8,18 @@ import { AgentError } from "../src/errors";
 import { InMemoryTimelineStore } from "../src/timeline";
 import { MiddlewarePipeline } from "../src/middleware/pipeline";
 import type { AgentTool, ToolResult } from "../src/tool/types";
-import type { AgentResult, AgentStreamEvent, ApprovalEngine, PolicyEngine } from "../src/types";
+import type {
+  AgentResult,
+  AgentStreamEvent,
+  ApprovalEngine,
+  ContextLifecycleHooks,
+  PolicyEngine,
+  SessionMemoryRecord,
+  SessionMemorySubsystem,
+} from "../src/types";
 import type { RunMessage } from "../src/message/types";
+import { createSessionMemoryRecord } from "../src/context/session-memory";
+import { initialContextRuntimeState } from "../src/context";
 import { baseCtx } from "./helpers";
 
 // --- Mock ModelClient ---
@@ -70,6 +80,8 @@ function buildRuntimeConfig(overrides: {
       payload: Record<string, unknown>;
     }) => void;
   };
+  sessionMemory?: SessionMemorySubsystem;
+  contextLifecycleHooks?: ContextLifecycleHooks;
   context?: {
     maxInputTokens: number;
     maxOutputTokens: number;
@@ -106,6 +118,10 @@ function buildRuntimeConfig(overrides: {
     ...(overrides.pipeline ? { pipeline: overrides.pipeline } : {}),
     ...(overrides.policy ? { policy: overrides.policy } : {}),
     ...(overrides.audit ? { audit: overrides.audit } : {}),
+    ...(overrides.sessionMemory ? { sessionMemory: overrides.sessionMemory } : {}),
+    ...(overrides.contextLifecycleHooks
+      ? { contextLifecycleHooks: overrides.contextLifecycleHooks }
+      : {}),
     ...(overrides.context ? { context: overrides.context } : {}),
   };
 }
@@ -489,7 +505,7 @@ describe("AgentRuntime", () => {
     const result = await runtime.run(ctx);
 
     expect(result.status).toBe("completed");
-    expect(result.state.memory).toEqual({ injected: true });
+    expect(result.state.memory).toMatchObject({ injected: true });
   });
 
   it("Policy denies tool use produces POLICY_DENIED error", async () => {
@@ -1623,6 +1639,349 @@ describe("AgentRuntime", () => {
     expect(seenContextMetadata).toBeDefined();
     expect(seenContextMetadata?.apiViewId).toBeDefined();
     expect(seenContextMetadata?.thresholdLevel).toBeDefined();
+  });
+
+  it("passes compact cache prefix into the main model request metadata", async () => {
+    let seenCompactCachePrefix: string | undefined;
+
+    const modelClient: ModelClient = {
+      generate: async (request) => {
+        seenCompactCachePrefix = request.metadata?.["compactCachePrefix"] as string | undefined;
+        return { type: "final", output: "ok" };
+      },
+      stream: async function* () {
+        yield { type: "done" as const };
+      },
+      resolve: () => ({
+        logicalModel: "test",
+        provider: "test",
+        providerModel: "test",
+      }),
+    };
+
+    const runtime = new AgentRuntime(buildRuntimeConfig({ modelClient }));
+    const ctx = baseCtx({ inputText: "hello" });
+    ctx.state.context = {
+      ...ctx.state.context,
+      ...{
+        roundIndex: 0,
+        lastLayerExecutions: [],
+        consecutiveCompactFailures: 0,
+        promptTooLongRetries: 0,
+        toolResultCache: {},
+        preservedSegments: {},
+        compactBoundaries: [],
+        forkedCachePrefix: "resp_cache_prefix_main",
+      },
+    };
+
+    const result = await runtime.run(ctx);
+
+    expect(result.status).toBe("completed");
+    expect(seenCompactCachePrefix).toBe("resp_cache_prefix_main");
+  });
+
+  it("captures effective request snapshots and runs post-compact lifecycle hooks", async () => {
+    const lifecycleEvents: string[] = [];
+    const hooks: ContextLifecycleHooks = {
+      afterCompact: ({ diagnostic }) => {
+        lifecycleEvents.push(`after:${diagnostic.strategy}`);
+      },
+      onPostCompactTurnStart: ({ diagnostic }) => {
+        lifecycleEvents.push(`start:${diagnostic.strategy}`);
+      },
+      onPostCompactTurnComplete: ({ diagnostic }) => {
+        lifecycleEvents.push(`complete:${diagnostic.strategy}`);
+      },
+    };
+    const modelClient = createMockModelClient([{ type: "final", output: "ok" }]);
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient,
+        contextLifecycleHooks: hooks,
+        context: {
+          maxInputTokens: 100,
+          maxOutputTokens: 100,
+          maxPromptTooLongRetries: 3,
+          maxReactiveCompactAttempts: 3,
+          maxCompactRequestRetries: 2,
+          compactRequestMaxInputChars: 20_000,
+          maxConsecutiveCompactFailures: 3,
+          toolResultSoftCharLimit: 6_000,
+          historySnipKeepRounds: 6,
+          historySnipMaxDropRounds: 1,
+          microcompactMaxToolChars: 500,
+          collapseRestoreMaxMessages: 8,
+          collapseRestoreTokenHeadroomRatio: 0.6,
+          rehydrationTokenBudget: 500,
+          recentFileBudgetTokens: 300,
+          skillsRehydrateBudgetTokens: 150,
+          thresholds: {
+            warningBufferTokens: 0,
+            autoCompactBufferTokens: 0,
+            errorBufferTokens: 0,
+            blockingHeadroomTokens: -10_000,
+          },
+        },
+      }),
+    );
+
+    const ctx = baseCtx();
+    ctx.input = { messages: buildInputMessages(18) };
+    ctx.state.context = {
+      ...initialContextRuntimeState(),
+      sessionMemoryState: {
+        notes:
+          "# Session Title\n_Test_\n\n# Current State\n_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._\nKeep coding.",
+        initialized: true,
+        tokensAtLastExtraction: 80,
+      },
+    };
+
+    const result = await runtime.run(ctx);
+
+    expect(result.status).toBe("completed");
+    expect(result.state.context?.lastEffectiveRequestSnapshot?.messages.length).toBeGreaterThan(0);
+    expect(result.state.context?.lastEffectiveRequestSnapshot?.toolNames).toBeDefined();
+    expect((result.state.context?.compactionDiagnostics?.length ?? 0) > 0).toBe(true);
+    expect(lifecycleEvents).toContain("after:session_memory");
+    expect(lifecycleEvents.some((entry) => entry.startsWith("start:"))).toBe(true);
+    expect(lifecycleEvents.some((entry) => entry.startsWith("complete:"))).toBe(true);
+    expect(result.state.context?.pendingPostCompactLifecycle).toBeUndefined();
+  });
+
+  it("passes runtime querySource into context preparation so internal compaction requests suppress heavy compact layers", async () => {
+    let seenMessageIds: string[] = [];
+
+    const modelClient: ModelClient = {
+      generate: async (request) => {
+        seenMessageIds = request.messages.map((message) => message.id);
+        return { type: "final", output: "ok" };
+      },
+      stream: async function* () {
+        yield { type: "done" as const };
+      },
+      resolve: () => ({
+        logicalModel: "test",
+        provider: "test",
+        providerModel: "test",
+      }),
+    };
+
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient,
+        context: {
+          maxInputTokens: 100,
+          maxOutputTokens: 100,
+          maxPromptTooLongRetries: 3,
+          maxReactiveCompactAttempts: 3,
+          maxCompactRequestRetries: 2,
+          compactRequestMaxInputChars: 20_000,
+          maxConsecutiveCompactFailures: 3,
+          toolResultSoftCharLimit: 6_000,
+          historySnipKeepRounds: 2,
+          historySnipMaxDropRounds: 1,
+          microcompactMaxToolChars: 500,
+          collapseRestoreMaxMessages: 8,
+          collapseRestoreTokenHeadroomRatio: 0.6,
+          rehydrationTokenBudget: 50_000,
+          recentFileBudgetTokens: 5_000,
+          skillsRehydrateBudgetTokens: 25_000,
+          thresholds: {
+            warningBufferTokens: 0,
+            autoCompactBufferTokens: 0,
+            errorBufferTokens: 0,
+            blockingHeadroomTokens: -10_000,
+          },
+        },
+      }),
+    );
+
+    const ctx = baseCtx();
+    ctx.metadata = { querySource: "session_memory" };
+    ctx.state.messages = buildInputMessages(12);
+
+    const result = await runtime.run(ctx);
+
+    expect(result.status).toBe("completed");
+    expect(
+      result.state.context?.lastLayerExecutions.some(
+        (layer) => layer.layer === "session_memory_compact" || layer.layer === "auto_compact",
+      ),
+    ).toBe(false);
+    expect(
+      seenMessageIds.some((id) => id.startsWith("summary_") || id.startsWith("msg_boundary")),
+    ).toBe(false);
+  });
+
+  it("loads persisted session memory snapshot before preparing context", async () => {
+    let loadCalled = 0;
+    let storedRecord: SessionMemoryRecord | null = createSessionMemoryRecord({
+      notes:
+        "# Session Title\n_Test run_\n\n# Current State\n_Working state_\nPersisted session memory notes",
+      initialized: true,
+      tokensAtLastExtraction: 120,
+      lastExtractionMessageId: "m_2",
+      lastSummarizedMessageId: "m_2",
+    });
+    const sessionMemory: SessionMemorySubsystem = {
+      store: {
+        load: async () => {
+          loadCalled += 1;
+          return storedRecord;
+        },
+        save: async (_runId: string, snapshot: SessionMemoryRecord) => {
+          storedRecord = snapshot;
+        },
+      },
+    };
+    const modelClient: ModelClient = {
+      generate: async () => ({ type: "final", output: "ok" }),
+      stream: async function* () {
+        yield { type: "done" as const };
+      },
+      resolve: () => ({
+        logicalModel: "test",
+        provider: "test",
+        providerModel: "test",
+      }),
+    };
+
+    const runtime = new AgentRuntime(buildRuntimeConfig({ modelClient, sessionMemory }));
+    const result = await runtime.run(baseCtx({ inputText: "hello" }));
+
+    expect(result.status).toBe("completed");
+    expect(loadCalled).toBeGreaterThan(0);
+    expect(result.state.context?.sessionMemoryState?.notes).toContain(
+      "Persisted session memory notes",
+    );
+    expect(result.state.context?.sessionMemoryState?.lastSummarizedMessageId).toBe("m_2");
+  });
+
+  it("persists session memory snapshot when timeline snapshot is saved", async () => {
+    const savedSnapshots: SessionMemoryRecord[] = [];
+    let storedRecord: SessionMemoryRecord | null = null;
+    const sessionMemory: SessionMemorySubsystem = {
+      store: {
+        load: async () => storedRecord,
+        save: async (_runId: string, snapshot: SessionMemoryRecord) => {
+          storedRecord = snapshot;
+          savedSnapshots.push(snapshot);
+        },
+      },
+    };
+    const modelClient: ModelClient = {
+      generate: async () => ({ type: "final", output: "ok" }),
+      stream: async function* () {
+        yield { type: "done" as const };
+      },
+      resolve: () => ({
+        logicalModel: "test",
+        provider: "test",
+        providerModel: "test",
+      }),
+    };
+
+    const runtime = new AgentRuntime(buildRuntimeConfig({ modelClient, sessionMemory }));
+    const ctx = baseCtx({ inputText: "hello" });
+    ctx.state.context = {
+      ...(ctx.state.context ?? {
+        roundIndex: 0,
+        lastLayerExecutions: [],
+        consecutiveCompactFailures: 0,
+        promptTooLongRetries: 0,
+        toolResultCache: {},
+        preservedSegments: {},
+        compactBoundaries: [],
+      }),
+      sessionMemoryState: {
+        notes: "# Session Title\n_Test_\n\n# Current State\n_Working state_\nPersisted notes",
+        initialized: true,
+        tokensAtLastExtraction: 88,
+        lastSummarizedMessageId: "m_5",
+      },
+    };
+
+    const result = await runtime.run(ctx);
+
+    expect(result.status).toBe("completed");
+    expect(
+      savedSnapshots.some(
+        (snapshot) =>
+          snapshot["notes"] ===
+          "# Session Title\n_Test_\n\n# Current State\n_Working state_\nPersisted notes",
+      ),
+    ).toBe(true);
+    expect(savedSnapshots.some((snapshot) => snapshot["lastSummarizedMessageId"] === "m_5")).toBe(
+      true,
+    );
+  });
+
+  it("extracts durable session-memory notes after a final response when thresholds are met", async () => {
+    const savedSnapshots: SessionMemoryRecord[] = [];
+    let storedRecord: SessionMemoryRecord | null = null;
+    const sessionMemory: SessionMemorySubsystem = {
+      store: {
+        load: async () => storedRecord,
+        save: async (_runId: string, snapshot: SessionMemoryRecord) => {
+          storedRecord = snapshot;
+          savedSnapshots.push(snapshot);
+        },
+      },
+      config: {
+        minimumTokensToInit: 20,
+        minimumTokensBetweenUpdates: 20,
+        toolCallsBetweenUpdates: 5,
+        extractionPollIntervalMs: 5,
+      },
+    };
+    let extractionCalls = 0;
+    const modelClient: ModelClient = {
+      generate: async (request) => {
+        if (request.metadata?.["sessionMemoryExtraction"]) {
+          extractionCalls += 1;
+          return {
+            type: "final",
+            output:
+              "# Session Title\n_Test Session_\n\n# Current State\n_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._\nRepairing session-memory extraction.\n\n# Task specification\n_What did the user ask to build? Any design decisions or other explanatory context_\nBuild a durable session-memory subsystem.\n\n# Files and Functions\n_What are the important files? In short, what do they contain and why are they relevant?_\n- packages/agent/src/runtime/agent-runtime.ts orchestrates extraction.\n\n# Workflow\n_What bash commands are usually run and in what order? How to interpret their output if not obvious?_\n- pnpm test\n\n# Errors & Corrections\n_Errors encountered and how they were fixed. What did the user correct? What approaches failed and should not be tried again?_\n- None yet.\n\n# Codebase and System Documentation\n_What are the important system components? How do they work/fit together?_\n- Runtime loads notes before compact.\n\n# Learnings\n_What has worked well? What has not? What to avoid? Do not duplicate items from other sections_\n- Persist notes separately from timeline snapshots.\n\n# Key results\n_If the user asked a specific output such as an answer to a question, a table, or other document, repeat the exact result here_\n- Durable notes created.\n\n# Worklog\n_Step by step, what was attempted, done? Very terse summary for each step._\n- Ran extraction after assistant final response.",
+          };
+        }
+        return {
+          type: "final",
+          output: "x".repeat(220),
+        };
+      },
+      stream: async function* () {
+        yield { type: "done" as const };
+      },
+      resolve: () => ({
+        logicalModel: "test",
+        provider: "test",
+        providerModel: "test",
+      }),
+    };
+
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient,
+        sessionMemory,
+      }),
+    );
+    const result = await runtime.run(
+      baseCtx({ inputText: "Implement a complete durable session-memory subsystem." }),
+    );
+
+    expect(result.status).toBe("completed");
+    expect(extractionCalls).toBe(1);
+    expect(result.state.context?.sessionMemoryState?.notes).toContain(
+      "Repairing session-memory extraction.",
+    );
+    expect(
+      savedSnapshots.some((snapshot) =>
+        String(snapshot["notes"] ?? "").includes("Repairing session-memory extraction."),
+      ),
+    ).toBe(true);
   });
 
   it("does not call model when compact breaker is open", async () => {

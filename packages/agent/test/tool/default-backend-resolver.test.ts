@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
+import { createToolCapabilityProfile } from "../../src/tool/capability";
 import { DefaultBackendResolver } from "../../src/tool/default-backend-resolver";
 import type { AgentTool, ExecutionBackend, ToolResult } from "../../src/tool/types";
 import { baseCtx } from "../helpers";
@@ -79,5 +80,66 @@ describe("DefaultBackendResolver", () => {
 
     const result = await resolver.resolve(baseCtx(), tool, { id: "tc_1", name: "echo", input: {} });
     expect(result).toBe(localBackend);
+  });
+
+  it("routes tools with legacy 'exec' capability to sandbox backend", async () => {
+    const tool: AgentTool = {
+      name: "bash",
+      description: "Runs shell commands",
+      schema: z.object({}).passthrough(),
+      capabilities: ["exec", "bash"],
+      invoke: async (): Promise<ToolResult> => ({ content: "ok" }),
+    };
+
+    const result = await resolver.resolve(baseCtx(), tool, {
+      id: "tc_legacy_exec",
+      name: "bash",
+      input: {},
+    });
+    expect(result).toBe(sandboxBackend);
+  });
+
+  it("routes tools with process_exec profile tag to sandbox backend", async () => {
+    const tool: AgentTool = {
+      name: "powershell",
+      description: "Runs powershell commands",
+      schema: z.object({}).passthrough(),
+      profile: createToolCapabilityProfile({
+        riskLevel: "high",
+        capabilityTags: ["process_exec", "powershell"],
+        sandboxExpectation: "workspace-write",
+        auditCategory: "exec",
+      }),
+      invoke: async (): Promise<ToolResult> => ({ content: "ok" }),
+    };
+
+    const result = await resolver.resolve(baseCtx(), tool, {
+      id: "tc_profile_exec",
+      name: "powershell",
+      input: {},
+    });
+    expect(result).toBe(sandboxBackend);
+  });
+
+  it("routes tools with filesystem profile tags to sandbox backend", async () => {
+    const tool: AgentTool = {
+      name: "notebook-edit",
+      description: "Edits notebook files",
+      schema: z.object({}).passthrough(),
+      profile: createToolCapabilityProfile({
+        riskLevel: "high",
+        capabilityTags: ["filesystem_read", "filesystem_write", "notebook"],
+        sandboxExpectation: "workspace-write",
+        auditCategory: "file_edit",
+      }),
+      invoke: async (): Promise<ToolResult> => ({ content: "ok" }),
+    };
+
+    const result = await resolver.resolve(baseCtx(), tool, {
+      id: "tc_profile_fs",
+      name: "notebook-edit",
+      input: {},
+    });
+    expect(result).toBe(sandboxBackend);
   });
 });

@@ -29,4 +29,17 @@ describe("context collapse reversible flow", () => {
     expect(restored.nextState.contextCollapseState?.lastRestoredAt).toBeDefined();
     expect(restored.messages.some((m) => m.id.startsWith("collapse_"))).toBe(false);
   });
+
+  it("cleans restored segment bookkeeping after successful restore", () => {
+    const state = initialContextRuntimeState();
+    const collapsed = applyContextCollapse(buildMessages(16), state);
+    const segmentId = Object.keys(collapsed.nextState.contextCollapseState?.segments ?? {})[0];
+    expect(segmentId).toBeDefined();
+
+    const restored = restoreCollapsedContext(collapsed.messages, collapsed.nextState, 4);
+
+    expect(restored.restored).toBe(true);
+    expect(restored.nextState.contextCollapseState?.segments?.[segmentId!]).toBeUndefined();
+    expect(restored.nextState.contextCollapseState?.collapsedMessageIds ?? []).toHaveLength(0);
+  });
 });

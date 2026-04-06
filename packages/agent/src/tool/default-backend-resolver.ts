@@ -3,6 +3,26 @@ import type { ToolCall } from "@renx/model";
 import type { AgentRunContext } from "../types";
 import type { AgentTool, BackendResolver, ExecutionBackend } from "./types";
 
+const requiresSandboxBackend = (tool: AgentTool): boolean => {
+  const capabilitySet = new Set(tool.capabilities ?? []);
+  if (capabilitySet.has("requires-exec") || capabilitySet.has("exec")) {
+    return true;
+  }
+  if (
+    capabilitySet.has("requires-filesystem-read") ||
+    capabilitySet.has("requires-filesystem-write")
+  ) {
+    return true;
+  }
+
+  const capabilityTags = new Set(tool.profile?.capabilityTags ?? []);
+  return (
+    capabilityTags.has("process_exec") ||
+    capabilityTags.has("filesystem_read") ||
+    capabilityTags.has("filesystem_write")
+  );
+};
+
 /**
  * Default backend resolver that selects an execution backend based on
  * tool capabilities.
@@ -21,13 +41,7 @@ export class DefaultBackendResolver implements BackendResolver {
     tool: AgentTool,
     _call: ToolCall,
   ): Promise<ExecutionBackend | undefined> {
-    if (tool.capabilities?.includes("requires-exec")) {
-      return this.sandboxBackend;
-    }
-    if (
-      tool.capabilities?.includes("requires-filesystem-read") ||
-      tool.capabilities?.includes("requires-filesystem-write")
-    ) {
+    if (requiresSandboxBackend(tool)) {
       return this.sandboxBackend;
     }
     return this.localBackend;

@@ -2,6 +2,8 @@ import type { AgentMessage, ToolCall } from "@renx/model";
 
 import { generateId } from "../helpers";
 import type { AgentInput, AgentRunContext, AgentState } from "../types";
+import { MemoryService } from "../memory";
+import { DefaultSkillsService } from "../skills";
 
 import { applyMessagePatch } from "./reducer";
 import { patchToolPairs } from "./patch-tool-pairs";
@@ -58,10 +60,6 @@ export class DefaultMessageManager implements MessageManager {
   normalizeIncoming(input: AgentInput): RunMessage[] {
     if (input.messages?.length) {
       return input.messages.map((m) => this.normalizeMessage(m));
-    }
-
-    if (input.inputText) {
-      return [this.createUserMessage(input.inputText)];
     }
 
     return [];
@@ -168,7 +166,8 @@ export class DefaultMessageManager implements MessageManager {
     messages = this.applyHistoryWindow(messages, this.historyWindowOptions);
 
     // Step 4: Inject memory messages
-    messages = this.injectMemoryMessages(messages, ctx.state.memory);
+    messages = this.injectMemoryMessages(messages, ctx.state.memory, ctx);
+    messages = this.injectSkillMessages(messages, ctx);
 
     // Step 5: Strip agent-only fields at the boundary
     return messages.map(({ source: _, messageId: __, ...msg }) => msg);
@@ -196,12 +195,28 @@ export class DefaultMessageManager implements MessageManager {
    */
   protected injectMemoryMessages(
     messages: RunMessage[],
-    memory: Record<string, unknown>,
+    memory: AgentState["memory"],
+    ctx?: AgentRunContext,
   ): RunMessage[] {
-    const keys = Object.keys(memory);
-    if (keys.length === 0) return messages;
-
-    const memoryContent = JSON.stringify(memory, null, 2);
+    const metadata = {
+      ...(ctx?.metadata ?? {}),
+      ...(ctx?.input.metadata ?? {}),
+    };
+    const query =
+      typeof metadata["memoryQuery"] === "string"
+        ? (metadata["memoryQuery"] as string)
+        : messages.filter((message) => message.role === "user").at(-1)?.content;
+    const explicit = metadata["explicitMemoryRecall"] === true || metadata["recallMemory"] === true;
+    const ignoreMemory = metadata["ignoreMemory"] === true || metadata["memoryMode"] === "ignore";
+    const memoryContent = new MemoryService(ctx?.services.memory).buildPromptMemory(memory, {
+      ...(query !== undefined ? { query } : {}),
+      ...(explicit ? { explicit: true } : {}),
+      ...(ignoreMemory ? { ignoreMemory: true } : {}),
+      ...(typeof metadata["memoryRecallLimit"] === "number"
+        ? { limit: metadata["memoryRecallLimit"] as number }
+        : {}),
+    });
+    if (!memoryContent) return messages;
     const memoryMessage: RunMessage = {
       id: generateId(),
       messageId: generateId("msg"),
@@ -212,6 +227,14 @@ export class DefaultMessageManager implements MessageManager {
     };
 
     return [memoryMessage, ...messages];
+  }
+
+  protected injectSkillMessages(messages: RunMessage[], ctx?: AgentRunContext): RunMessage[] {
+    const subsystem = ctx?.services.skills;
+    if (!ctx || !subsystem) return messages;
+    const skillMessages = new DefaultSkillsService(subsystem).buildPromptMessages(ctx, messages);
+    if (skillMessages.length === 0) return messages;
+    return [...skillMessages, ...messages];
   }
 
   // --- Private helpers ---

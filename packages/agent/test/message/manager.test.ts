@@ -9,8 +9,10 @@ describe("DefaultMessageManager", () => {
   const mgr = new DefaultMessageManager();
 
   describe("normalizeIncoming", () => {
-    it("converts inputText to user message", () => {
-      const msgs = mgr.normalizeIncoming({ inputText: "hello" });
+    it("normalizes user messages", () => {
+      const msgs = mgr.normalizeIncoming({
+        messages: [{ id: "", messageId: "", role: "user", content: "hello", createdAt: "" }],
+      });
       expect(msgs).toHaveLength(1);
       expect(msgs[0]!.role).toBe("user");
       expect(msgs[0]!.content).toBe("hello");
@@ -200,20 +202,6 @@ describe("DefaultMessageManager", () => {
       // Original messages follow
       expect(effective[1]!.role).toBe("user");
       expect(effective[1]!.content).toBe("hi");
-    });
-  });
-
-  describe("normalizeIncoming", () => {
-    it("when both inputText and messages are provided, messages take precedence", () => {
-      const result = mgr.normalizeIncoming({
-        inputText: "this is ignored",
-        messages: [
-          { id: "", messageId: "", role: "user", content: "from messages", createdAt: "" },
-        ],
-      });
-
-      expect(result).toHaveLength(1);
-      expect(result[0]!.content).toBe("from messages");
     });
   });
 });

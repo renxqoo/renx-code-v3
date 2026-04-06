@@ -60,6 +60,7 @@ export const estimateInputTokens = (input: {
 
   const lastUsage = input.state.lastKnownUsage?.inputTokens;
   if (lastUsage === undefined) return estimate;
+  if (estimate < lastUsage) return estimate;
   const anchorMessageCount = input.state.lastUsageAnchorMessageCount;
   if (anchorMessageCount === undefined || anchorMessageCount <= 0) return estimate;
   if (input.messages.length <= anchorMessageCount) return estimate;

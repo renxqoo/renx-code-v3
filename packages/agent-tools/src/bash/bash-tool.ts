@@ -22,9 +22,28 @@ import {
 } from "./tool-result-storage";
 
 const inputSchema = z.object({
-  command: z.string().min(1, "command is required"),
-  cwd: z.string().min(1).optional(),
-  timeoutMs: z.number().int().positive().max(3_600_000).optional(),
+  command: z.string().min(1, "command is required").describe("The command to execute"),
+  timeout: z
+    .number()
+    .int()
+    .positive()
+    .max(3_600_000)
+    .optional()
+    .describe("Optional timeout in milliseconds."),
+  description: z
+    .string()
+    .optional()
+    .describe(
+      'Clear, concise description of what this command does in active voice. Never use words like "complex" or "risk".',
+    ),
+  run_in_background: z
+    .boolean()
+    .optional()
+    .describe("Set to true to run this command in the background."),
+  dangerouslyDisableSandbox: z
+    .boolean()
+    .optional()
+    .describe("Set this to true to run commands without sandboxing."),
 });
 
 export type BashToolInput = z.infer<typeof inputSchema>;
@@ -63,41 +82,37 @@ export interface CreateBashToolOptions {
   detectImageOutput?: boolean;
 }
 
-const DEFAULT_NAME = "bash";
+const DEFAULT_NAME = "Bash";
 
 /** Default tool `description` string sent to the LLM (not operator-facing documentation). */
-export const BASH_TOOL_DEFAULT_DESCRIPTION = `Execute a shell command with explicit policy, sandbox, and approval controls.
+export const BASH_TOOL_DEFAULT_DESCRIPTION = `Executes a given bash command and returns its output.
 
-Use bash for:
-- repository search and inspection
-- listing files and directories
-- build, test, lint, and git commands
-- focused environment checks
+The working directory persists between commands, but shell state does not.
 
-Prefer other tools when available:
-- use read_file when you already know the file path
-- use file_edit for precise edits to existing files
-- use write_file for full-file writes
+IMPORTANT: Avoid using this tool to run \`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:
 
-Platform guidance:
-- Windows: prefer PowerShell command shapes such as Get-ChildItem, Get-Content, Select-String, and direct git/npm commands
-- macOS/Linux: prefer rg, rg --files, ls, cat, find, and shell pipelines
+- File search: Use Glob (NOT find or ls)
+- Content search: Use Grep (NOT grep or rg)
+- Read files: Use Read (NOT cat/head/tail)
+- Edit files: Use Edit (NOT sed/awk)
+- Write files: Use Write (NOT echo >/cat <<EOF)
+- Communication: Output text directly (NOT echo/printf)
 
-Execution guidance:
-- command is required
-- cwd is optional; when omitted, the runtime uses the current workspace / process working directory
-- timeoutMs is optional; default and maximum follow the active tool/host profile
-- invocation is synchronous (one call returns after the process exits)
-- use parallel tool calls for independent commands
-- use && only when later commands depend on earlier ones
-- commands run through explicit shell policy and sandbox profiles
+While the Bash tool can do similar things, it's better to use the built-in tools as they provide a better user experience and make it easier to review tool calls and give permission.
 
-Examples:
-- Windows search: Get-ChildItem -Path src -Recurse | Select-String -Pattern 'TODO'
-- Windows read: Get-Content -Raw package.json
-- Unix search: rg "pattern" src
-- Unix file discovery: rg --files src
-- Git status: git status && git diff --stat`;
+# Instructions
+- If your command will create new directories or files, first use this tool to run \`ls\` to verify the parent directory exists and is the correct location.
+- Always quote file paths that contain spaces with double quotes in your command.
+- You may specify an optional timeout in milliseconds.
+- When issuing multiple commands:
+  - If the commands are independent and can run in parallel, make multiple Bash tool calls in a single message.
+  - If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together.
+  - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail.
+  - DO NOT use newlines to separate commands.
+- For git commands:
+  - Prefer to create a new commit rather than amending an existing commit.
+  - Before running destructive operations (e.g., git reset --hard, git push --force, git checkout --), consider whether there is a safer alternative.
+  - Never skip hooks (--no-verify) or bypass signing unless the user has explicitly asked for it.`;
 
 const DEFAULT_DESC = BASH_TOOL_DEFAULT_DESCRIPTION;
 
@@ -202,14 +217,23 @@ export function createBashTool(options: CreateBashToolOptions = {}): AgentTool {
         };
       }
       const cmd = parsed.data.command.trim();
-      const cwdResolved = parsed.data.cwd ?? options.resolveCwd?.(ctx, parsed.data) ?? undefined;
+      const cwdResolved = options.resolveCwd?.(ctx, parsed.data) ?? undefined;
       const cwdForPaths = cwdResolved ?? pathPolicy?.workspaceRoot ?? processCwd();
+      const requestMetadata = {
+        ...(parsed.data.description ? { description: parsed.data.description } : {}),
+        ...(parsed.data.run_in_background !== undefined
+          ? { run_in_background: parsed.data.run_in_background }
+          : {}),
+        ...(parsed.data.dangerouslyDisableSandbox !== undefined
+          ? { dangerouslyDisableSandbox: parsed.data.dangerouslyDisableSandbox }
+          : {}),
+      };
 
       const verdict = assessBashCommand(cmd, security);
       if (!verdict.ok) {
         return {
           content: `[${verdict.code}] ${verdict.message}`,
-          metadata: { tool: name, blocked: true, code: verdict.code },
+          metadata: { tool: name, blocked: true, code: verdict.code, ...requestMetadata },
         };
       }
 
@@ -222,7 +246,12 @@ export function createBashTool(options: CreateBashToolOptions = {}): AgentTool {
         if (ast.kind === "too-complex") {
           return {
             content: `[AST_TOO_COMPLEX] ${ast.reason}`,
-            metadata: { tool: name, blocked: true, code: "AST_TOO_COMPLEX" },
+            metadata: {
+              tool: name,
+              blocked: true,
+              code: "AST_TOO_COMPLEX",
+              ...requestMetadata,
+            },
           };
         }
       }
@@ -235,7 +264,7 @@ export function createBashTool(options: CreateBashToolOptions = {}): AgentTool {
       if (!structural.ok) {
         return {
           content: `[${structural.code}] ${structural.message}`,
-          metadata: { tool: name, blocked: true, code: structural.code },
+          metadata: { tool: name, blocked: true, code: structural.code, ...requestMetadata },
         };
       }
 
@@ -243,7 +272,7 @@ export function createBashTool(options: CreateBashToolOptions = {}): AgentTool {
       if (!backend?.exec) {
         return {
           content: "No execution backend with exec() is configured; cannot run shell commands.",
-          metadata: { tool: name, error: "no_exec_backend" },
+          metadata: { tool: name, error: "no_exec_backend", ...requestMetadata },
         };
       }
 
@@ -251,11 +280,11 @@ export function createBashTool(options: CreateBashToolOptions = {}): AgentTool {
       if (!caps.exec) {
         return {
           content: "Execution backend does not advertise exec capability.",
-          metadata: { tool: name, error: "exec_disabled" },
+          metadata: { tool: name, error: "exec_disabled", ...requestMetadata },
         };
       }
 
-      const timeoutMs = Math.min(parsed.data.timeoutMs ?? defaultTimeoutMs, maxTimeoutMs);
+      const timeoutMs = Math.min(parsed.data.timeout ?? defaultTimeoutMs, maxTimeoutMs);
       try {
         const execOpts =
           cwdResolved !== undefined ? { cwd: cwdResolved, timeoutMs } : { timeoutMs };
@@ -290,6 +319,10 @@ export function createBashTool(options: CreateBashToolOptions = {}): AgentTool {
         const structured: Record<string, unknown> = {
           exitCode: result.exitCode,
           stderr: result.stderr,
+          ...(parsed.data.description ? { description: parsed.data.description } : {}),
+          ...("dangerouslyDisableSandbox" in parsed.data
+            ? { dangerouslyDisableSandbox: parsed.data.dangerouslyDisableSandbox }
+            : {}),
         };
         if (imageStructured) {
           structured.stdoutSummary = stdoutOut;
@@ -310,6 +343,7 @@ export function createBashTool(options: CreateBashToolOptions = {}): AgentTool {
             tool: name,
             cwd: cwdResolved ?? null,
             timeoutMs,
+            ...requestMetadata,
             ...(spilled.artifactPath ? { textArtifactPath: spilled.artifactPath } : {}),
             ...(imageStructured?.image as Record<string, unknown> | undefined),
           },
@@ -318,7 +352,7 @@ export function createBashTool(options: CreateBashToolOptions = {}): AgentTool {
         const message = e instanceof Error ? e.message : String(e);
         return {
           content: `Execution failed: ${message}`,
-          metadata: { tool: name, error: "exec_exception" },
+          metadata: { tool: name, error: "exec_exception", ...requestMetadata },
         };
       }
     },

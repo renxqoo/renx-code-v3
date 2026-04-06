@@ -19,12 +19,20 @@ export const buildInput = (overrides?: {
   inputText?: string;
   messages?: AgentState["messages"];
 }) => {
-  const input: { inputText?: string; messages?: AgentState["messages"] } = {};
-  if (overrides?.inputText !== undefined) {
-    input.inputText = overrides.inputText;
-  }
+  const input: { messages?: AgentState["messages"] } = {};
   if (overrides?.messages !== undefined) {
     input.messages = overrides.messages;
+  } else if (overrides?.inputText !== undefined) {
+    input.messages = [
+      {
+        id: "msg_input_1",
+        messageId: "msg_input_1",
+        role: "user",
+        content: overrides.inputText,
+        createdAt: new Date().toISOString(),
+        source: "input",
+      },
+    ];
   }
   return input;
 };

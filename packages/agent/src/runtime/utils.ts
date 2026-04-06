@@ -3,9 +3,15 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 
 import type { AgentTool } from "../tool/types";
 
-export const toToolInputSchema = (schema: AgentTool["schema"]): Record<string, unknown> => {
+export const toToolInputSchema = (tool: AgentTool): Record<string, unknown> => {
+  if (tool.inputJsonSchema) {
+    return tool.inputJsonSchema;
+  }
+  if (!tool.schema) {
+    return { type: "object", properties: {}, additionalProperties: true };
+  }
   try {
-    return zodToJsonSchema(schema as unknown as Parameters<typeof zodToJsonSchema>[0], {
+    return zodToJsonSchema(tool.schema as unknown as Parameters<typeof zodToJsonSchema>[0], {
       target: "openAi",
     }) as Record<string, unknown>;
   } catch {
@@ -80,6 +86,32 @@ export type ModelRequestWithContextMetadata = ModelRequest & {
     apiViewId?: string;
     compactBoundaryId?: string;
     thresholdLevel?: "healthy" | "warning" | "auto_compact" | "error" | "blocking";
+    querySource?: string;
+    contextManagement?: {
+      edits: Array<
+        | {
+            type: "clear_tool_uses_20250919";
+            trigger?: {
+              type: "input_tokens";
+              value: number;
+            };
+            keep?: {
+              type: "tool_uses";
+              value: number;
+            };
+            clear_tool_inputs?: boolean | string[];
+            exclude_tools?: string[];
+            clear_at_least?: {
+              type: "input_tokens";
+              value: number;
+            };
+          }
+        | {
+            type: "clear_thinking_20251015";
+            keep: { type: "thinking_turns"; value: number } | "all";
+          }
+      >;
+    };
   };
 };
 

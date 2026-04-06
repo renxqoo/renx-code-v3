@@ -2,6 +2,7 @@ import type { AgentMessage } from "@renx/model";
 
 import type { RunMessage } from "../message/types";
 import { groupMessagesByRound } from "./grouping";
+import { selectProtocolSafeSuffix } from "./protocol-safe-tail";
 
 export interface AutoCompactResult {
   apiView: AgentMessage[];
@@ -12,21 +13,35 @@ export interface AutoCompactResult {
     digest: string;
     summary: string;
     messageIds: string[];
+    messages: RunMessage[];
   };
   boundary?: {
     boundaryId: string;
-    strategy: "auto_compact" | "reactive_compact";
+    strategy: "auto_compact" | "reactive_compact" | "manual_compact";
   };
 }
+
+const buildPreservedSegmentRelink = (
+  summaryMessageId: string,
+  preservedTail: RunMessage[],
+): Record<string, string> | undefined => {
+  if (preservedTail.length === 0) return undefined;
+  return {
+    headMessageId: preservedTail[0]!.id,
+    anchorMessageId: summaryMessageId,
+    tailMessageId: preservedTail[preservedTail.length - 1]!.id,
+  };
+};
 
 export const applyAutoCompact = (
   apiView: AgentMessage[],
   canonicalMessages: RunMessage[],
-  strategy: "auto_compact" | "reactive_compact",
+  strategy: "auto_compact" | "reactive_compact" | "manual_compact",
   options?: {
     maxCompactRequestRetries?: number;
     compactRequestMaxInputChars?: number;
     historySnipMaxDropRounds?: number;
+    customInstructions?: string;
   },
 ): AutoCompactResult => {
   if (canonicalMessages.length < 6) {
@@ -35,8 +50,11 @@ export const applyAutoCompact = (
 
   const createdAt = new Date().toISOString();
   const compactInput = prepareCompactInput(canonicalMessages, options);
-  const compacted = compactInput.slice(0, Math.max(1, compactInput.length - 8));
-  const preservedTail = compactInput.slice(compacted.length);
+  const preservedTail = selectProtocolSafeSuffix(compactInput, 8);
+  const compacted = compactInput.slice(0, Math.max(0, compactInput.length - preservedTail.length));
+  if (compacted.length === 0) {
+    return { apiView, canonicalMessages, compactedMessageCount: 0 };
+  }
   const boundaryId = `boundary_${Date.now()}`;
   const segmentId = `segment_${boundaryId}`;
   const digest = buildSegmentDigest(compacted);
@@ -46,7 +64,7 @@ export const applyAutoCompact = (
     .slice(-6)
     .map((message) => `${message.role}: ${message.content.slice(0, 120)}`);
 
-  const summaryBody = buildCompactionSeed(compacted);
+  const summaryBody = buildCompactionSeed(compacted, options?.customInstructions);
 
   const boundaryMessage: RunMessage = {
     id: `msg_${boundaryId}`,
@@ -57,12 +75,15 @@ export const applyAutoCompact = (
     content: `[Compact Boundary:${boundaryId}]\n${summaryLines.join("\n")}`,
     compactBoundary: {
       boundaryId,
-      strategy: strategy === "auto_compact" ? "auto_compact" : "reactive_compact",
+      strategy,
       createdAt,
     },
     preservedSegmentRef: {
       segmentId,
       digest,
+    },
+    metadata: {
+      preservedSegmentRelink: buildPreservedSegmentRelink(`summary_${boundaryId}`, preservedTail),
     },
   };
 
@@ -76,6 +97,9 @@ export const applyAutoCompact = (
     preservedSegmentRef: {
       segmentId,
       digest,
+    },
+    metadata: {
+      compactSource: compacted.map((message) => `${message.role}: ${message.content}`).join("\n\n"),
     },
   };
 
@@ -92,12 +116,12 @@ export const applyAutoCompact = (
   );
 
   const nextCanonical = [boundaryMessage, summaryMessage, ...preservedTailWithRefs];
-  const keptIds = new Set(nextCanonical.map((message) => message.id));
-  const nextApiView = [
-    boundaryMessage,
-    summaryMessage,
-    ...apiView.filter((message) => keptIds.has(message.id)),
-  ];
+  const canonicalIds = new Set(canonicalMessages.map((message) => message.id));
+  const transientMessages = apiView.filter((message) => !canonicalIds.has(message.id));
+  const canonicalApiView = nextCanonical.map(
+    ({ messageId: _messageId, source: _source, ...msg }) => msg,
+  );
+  const nextApiView = [...transientMessages, ...canonicalApiView];
   return {
     apiView: nextApiView,
     canonicalMessages: nextCanonical,
@@ -111,11 +135,12 @@ export const applyAutoCompact = (
       digest,
       summary: summaryBody,
       messageIds: compacted.map((m) => m.id),
+      messages: preservedTailWithRefs,
     },
   };
 };
 
-const buildCompactionSeed = (messages: RunMessage[]): string => {
+const buildCompactionSeed = (messages: RunMessage[], customInstructions?: string): string => {
   const excerpt = messages
     .slice(-24)
     .map((m) => {
@@ -127,7 +152,10 @@ const buildCompactionSeed = (messages: RunMessage[]): string => {
   const paths = messages.flatMap((m) => extractLikelyPaths(m.content)).slice(-8);
   const pathBlock =
     paths.length > 0 ? `\nLikely paths:\n${paths.map((p) => `- ${p}`).join("\n")}` : "";
-  return `Compaction seed for model summarization:\n${excerpt}${pathBlock}`;
+  const instructionBlock = customInstructions
+    ? `\nCompact instructions:\n${customInstructions}`
+    : "";
+  return `Compaction seed for model summarization:\n${excerpt}${pathBlock}${instructionBlock}`;
 };
 
 const extractLikelyPaths = (content: string): string[] => {

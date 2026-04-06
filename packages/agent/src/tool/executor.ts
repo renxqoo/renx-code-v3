@@ -2,19 +2,32 @@ import type { ToolCall } from "@renx/model";
 
 import { AgentError } from "../errors";
 import { generateId } from "../helpers";
+import { applyStatePatch } from "../state";
 import type { AgentRunContext, AgentStatePatch } from "../types";
 import type { AuditLogger, AuditEventType } from "../types";
 
 import type {
   AgentTool,
   BackendResolver,
+  ExecutionBackend,
   ToolExecutionResult,
+  ToolContext,
   ToolRegistry,
   ToolResult,
 } from "./types";
 import { validateToolInput } from "./input-validation";
 
 import type { AggregatedDecision, MiddlewarePipeline } from "../middleware/pipeline";
+
+const cloneRunContextState = (ctx: AgentRunContext): AgentRunContext => ({
+  ...ctx,
+  state: {
+    ...ctx.state,
+    messages: [...ctx.state.messages],
+    scratchpad: { ...ctx.state.scratchpad },
+    memory: { ...ctx.state.memory },
+  },
+});
 
 /**
  * Result of a single tool execution within a batch.
@@ -86,11 +99,7 @@ export class ToolExecutor {
     while (true) {
       try {
         // Invoke the tool
-        const toolCtx = {
-          runContext: ctx,
-          toolCall: call,
-          backend,
-        };
+        const toolCtx = this.createToolContext(ctx, call, backend);
         const validatedInput = validateToolInput(tool, call.input, toolCtx);
         const toolResult = await tool.invoke(validatedInput, toolCtx);
 
@@ -202,11 +211,7 @@ export class ToolExecutor {
     let attempts = 0;
     while (true) {
       try {
-        const toolCtx = {
-          runContext: ctx,
-          toolCall: call,
-          backend,
-        };
+        const toolCtx = this.createToolContext(ctx, call, backend);
         const validatedInput = validateToolInput(tool, call.input, toolCtx);
         const toolResult = await tool.invoke(validatedInput, toolCtx);
 
@@ -285,6 +290,52 @@ export class ToolExecutor {
   private isConcurrencySafe(call: ToolCall): boolean {
     const tool = this.registry.get(call.name);
     return tool?.isConcurrencySafe?.(call.input) ?? false;
+  }
+
+  private createToolContext(
+    ctx: AgentRunContext,
+    call: ToolCall,
+    backend: ExecutionBackend | undefined,
+  ): ToolContext {
+    return {
+      runContext: ctx,
+      toolCall: call,
+      backend,
+      tools: {
+        list: () => this.registry.list(),
+        get: (name: string) => this.registry.get(name),
+        invoke: async (request) => {
+          const nestedCtx = request.runContext ?? cloneRunContextState(ctx);
+          const nestedCall: ToolCall = {
+            id: request.id ?? generateId("tc"),
+            name: request.name,
+            input: request.input,
+          };
+          const nestedResult = await this.run(nestedCall, nestedCtx);
+          if (nestedResult.type !== "completed") {
+            throw new AgentError({
+              code: "TOOL_ERROR",
+              message: `Nested tool invocation stopped: ${request.name}`,
+              metadata: {
+                toolName: request.name,
+                toolCallId: nestedCall.id,
+                reason: nestedResult.reason,
+              },
+            });
+          }
+
+          let nextState = nestedCtx.state;
+          for (const patch of nestedResult.statePatches) {
+            nextState = applyStatePatch(nextState, patch);
+          }
+          if (nestedResult.result.output.statePatch) {
+            nextState = applyStatePatch(nextState, nestedResult.result.output.statePatch);
+          }
+          nestedCtx.state = nextState;
+          return nestedResult.result;
+        },
+      },
+    };
   }
 
   private emitAudit(

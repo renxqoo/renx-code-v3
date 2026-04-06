@@ -13,11 +13,12 @@
   },
   "scripts": {
     "prebuild:wasm": "node scripts/ensure-bash-wasm.mjs",
-    "build": "pnpm run prebuild:wasm && pnpm exec tsup src/index.ts --format esm --sourcemap --clean --out-dir dist --external web-tree-sitter && pnpm exec tsc -p tsconfig.json --emitDeclarationOnly",
+    "build": "pnpm run prebuild:wasm && node ../../scripts/build-package.mjs --external web-tree-sitter",
     "clean": "node ../../scripts/clean-package.mjs"
   },
   "dependencies": {
     "@renx/agent": "workspace:*",
+    "ajv": "^8.17.1",
     "shell-quote": "^1.8.1",
     "tree-sitter-bash": "^0.25.1",
     "web-tree-sitter": "^0.26.8",

@@ -48,4 +48,49 @@ describe("auto compact", () => {
     expect(remainingIds).not.toContain("m_0");
     expect(compacted.compactedMessageCount).toBeGreaterThan(0);
   });
+
+  it("rebuilds api view from preserved canonical tail when current api view was already collapsed", () => {
+    const canonical = Array.from({ length: 16 }, (_, idx) => makeMessage(idx, idx));
+    const apiView = [
+      ...canonical.slice(0, 3),
+      {
+        id: "collapse_marker",
+        messageId: "collapse_marker",
+        role: "system" as const,
+        content: "[Context Collapse] 7 messages folded.",
+        createdAt: new Date().toISOString(),
+        source: "framework" as const,
+        roundIndex: 999,
+        metadata: {
+          segmentId: "collapse_segment_1",
+        },
+      },
+      ...canonical.slice(-6),
+    ].map(({ messageId: _messageId, source: _source, roundIndex: _roundIndex, ...m }) => m);
+
+    const compacted = applyAutoCompact(apiView, canonical, "auto_compact");
+
+    const expectedTailIds = compacted.canonicalMessages.slice(2).map((m) => m.id);
+    expect(expectedTailIds).toHaveLength(8);
+    const apiIds = new Set(compacted.apiView.map((m) => m.id));
+    for (const id of expectedTailIds) {
+      expect(apiIds.has(id)).toBe(true);
+    }
+  });
+
+  it("stores preserved segment relink metadata on the boundary for transcript reconstruction", () => {
+    const canonical = Array.from({ length: 20 }, (_, idx) => makeMessage(idx, Math.floor(idx / 2)));
+    const apiView = canonical.map(({ messageId: _messageId, source: _source, ...m }) => m);
+
+    const compacted = applyAutoCompact(apiView, canonical, "auto_compact");
+    const boundary = compacted.canonicalMessages[0];
+    const summary = compacted.canonicalMessages[1];
+    const tail = compacted.canonicalMessages[2];
+
+    expect(boundary?.metadata?.["preservedSegmentRelink"]).toEqual({
+      headMessageId: tail?.id,
+      anchorMessageId: summary?.id,
+      tailMessageId: compacted.canonicalMessages[compacted.canonicalMessages.length - 1]?.id,
+    });
+  });
 });
