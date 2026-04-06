@@ -20,6 +20,7 @@ import type {
 import { DefaultMessageManager } from "../message/manager";
 import { InMemoryToolRegistry } from "../tool/registry";
 import { ToolExecutor } from "../tool/executor";
+import { buildToolErrorResult } from "../tool/error-result";
 import { MiddlewarePipeline } from "../middleware/pipeline";
 import type { AgentTool, ToolResult } from "../tool/types";
 import { AllowAllPolicy } from "../policy";
@@ -936,24 +937,13 @@ export class AgentRuntime {
   }
 
   private buildMissingToolResult(call: ToolCall): ToolResult {
-    const structured = {
-      ok: false,
-      error: {
-        code: "TOOL_NOT_FOUND",
-        message: `Tool not found: ${call.name}`,
-        details: { toolName: call.name, toolCallId: call.id },
-      },
-    };
-    return {
-      content: JSON.stringify(structured),
-      structured,
-      metadata: {
-        ok: false,
-        errorCode: "TOOL_NOT_FOUND",
-        toolName: call.name,
-        toolCallId: call.id,
-      },
-    };
+    return buildToolErrorResult({
+      toolName: call.name,
+      toolCallId: call.id,
+      errorCode: "TOOL_NOT_FOUND",
+      message: `Tool not found: ${call.name}`,
+      details: { toolName: call.name, toolCallId: call.id },
+    });
   }
 
   private toMemoryScopeContext(ctx: AgentRunContext): {

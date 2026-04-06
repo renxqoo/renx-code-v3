@@ -202,6 +202,78 @@ export {
   MemorySnapshotSyncService,
   MemoryWritePipeline,
   MemoryService,
+  // --- memdir (file-based memory) ---
+  FileMemoryDirStore,
+  ensureMemoryDirExists,
+  scanMemoryFiles,
+  parseFrontmatter,
+  // --- prompts ---
+  buildMemoryLines,
+  buildMemoryPrompt,
+  buildSearchingPastContextSection,
+  buildAssistantDailyLogPrompt,
+  // --- extractor ---
+  ExtractionPipeline,
+  createExtractionToolGate,
+  TurnThrottle,
+  CoalescenceBuffer,
+  hasMemoryWritesSince,
+  drainPendingExtractions,
+  // --- dream ---
+  DreamExecutor,
+  DreamGate,
+  ConsolidationLock,
+  FileSessionScanner,
+  // --- ranking ---
+  findRelevantMemories,
+  selectRelevantMemories,
+  // --- detection ---
+  detectSessionFileType,
+  isAutoMemFile,
+  memoryScopeForPath,
+  isAutoManagedMemoryFile,
+  isMemoryDirectory,
+  isShellCommandTargetingMemory,
+  isAutoManagedMemoryPattern,
+  // --- secret scanner ---
+  scanForSecrets,
+  redactSecrets,
+  getSecretLabel,
+  // --- kairos ---
+  getDailyLogPath,
+  appendToDailyLog,
+} from "./memory";
+export type {
+  // --- extractor ---
+  ExtractionPipelineConfig,
+  ForkedAgentRunner,
+  ExtractionContext,
+  ExtractionGateConfig,
+  ExtractionEvents,
+  // --- dream ---
+  DreamExecutorConfig,
+  DreamRunner,
+  DreamContext,
+  DreamGateConfig,
+  SessionScanner,
+  // --- ranking ---
+  RelevantMemory,
+  // --- memdir ---
+  MemoryFrontmatter,
+  ParsedMemoryFile,
+  MemoryFileHeader,
+  // --- secret scanner ---
+  ScannerSecretMatch,
+  SecretRule,
+  // --- detection ---
+  MemoryDetectionContext,
+  MemoryScope as DetectionMemoryScope,
+  // --- session memory extractor ---
+  SessionMemoryExtractorConfig,
+  SessionMemoryExtractionState,
+  ExtractionRunner,
+  ExtractionContext as SessionExtractionContext,
+  SectionSize,
 } from "./memory";
 export type {
   MemoryAutomationConfig,

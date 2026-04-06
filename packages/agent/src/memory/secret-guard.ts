@@ -1,49 +1,27 @@
+/**
+ * Shared memory snapshot secret scanning.
+ *
+ * Uses the full 37-rule gitleaks-compatible scanner from ./secret-scanner
+ * to scan all memory snapshot entries for credential patterns.
+ *
+ * Reports which entries are unsafe to sync.
+ */
+
 import { createMemorySnapshot } from "./snapshot";
 import type { MemorySnapshot } from "./types";
+import { scanForSecrets, type SecretMatch } from "./secret-scanner";
 
-export interface MemorySecretMatch {
-  ruleId: string;
-  label: string;
-}
+export type { SecretMatch } from "./secret-scanner";
 
 export interface SharedMemorySecretIssue {
   key: string;
-  matches: MemorySecretMatch[];
+  matches: SecretMatch[];
 }
 
 export interface SharedMemorySecretReport {
   hasSecrets: boolean;
   issues: SharedMemorySecretIssue[];
 }
-
-type SecretRule = {
-  id: string;
-  label: string;
-  pattern: RegExp;
-};
-
-const SECRET_RULES: SecretRule[] = [
-  {
-    id: "github-pat",
-    label: "GitHub PAT",
-    pattern: /\bghp_[0-9a-zA-Z]{30,}\b/g,
-  },
-  {
-    id: "github-fine-grained-pat",
-    label: "GitHub Fine-grained PAT",
-    pattern: /\bgithub_pat_[0-9a-zA-Z_]{60,120}\b/g,
-  },
-  {
-    id: "openai-api-key",
-    label: "OpenAI API Key",
-    pattern: /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}\b/g,
-  },
-  {
-    id: "slack-bot-token",
-    label: "Slack Bot Token",
-    pattern: /\bxoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*\b/g,
-  },
-];
 
 const collectSharedEntries = (
   snapshot: MemorySnapshot | undefined,
@@ -85,15 +63,8 @@ const collectSharedEntries = (
   return entries;
 };
 
-export const scanMemorySecrets = (content: string): MemorySecretMatch[] => {
-  const matches: MemorySecretMatch[] = [];
-  for (const rule of SECRET_RULES) {
-    if (rule.pattern.test(content)) {
-      matches.push({ ruleId: rule.id, label: rule.label });
-    }
-    rule.pattern.lastIndex = 0;
-  }
-  return matches;
+export const scanMemorySecrets = (content: string): SecretMatch[] => {
+  return scanForSecrets(content);
 };
 
 export const checkSharedMemorySnapshotForSecrets = (
@@ -102,7 +73,7 @@ export const checkSharedMemorySnapshotForSecrets = (
   const issues = collectSharedEntries(snapshot)
     .map(({ key, content }) => ({
       key,
-      matches: scanMemorySecrets(content),
+      matches: scanForSecrets(content),
     }))
     .filter((issue) => issue.matches.length > 0);
 

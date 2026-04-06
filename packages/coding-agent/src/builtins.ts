@@ -24,7 +24,7 @@ export const createBuiltInCodingSubagents = (
       "General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries, use this agent.",
     systemPrompt: GENERAL_PURPOSE_AGENT_PROMPT,
     tools: selectGeneralPurposeTools(tools),
-    maxSteps: 12,
+    maxSteps: 1000,
   },
   {
     name: "Explore",
@@ -32,7 +32,7 @@ export const createBuiltInCodingSubagents = (
       "Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns, search code for keywords, or answer questions about how the codebase works.",
     systemPrompt: EXPLORE_AGENT_PROMPT,
     tools: selectExploreTools(tools),
-    maxSteps: 6,
+    maxSteps: 1000,
   },
   {
     name: "Plan",
@@ -40,7 +40,7 @@ export const createBuiltInCodingSubagents = (
       "Software architect agent for designing implementation plans. Use this when you need a read-only implementation strategy with sequencing, critical files, and architectural trade-offs.",
     systemPrompt: PLAN_AGENT_PROMPT,
     tools: selectPlanTools(tools),
-    maxSteps: 8,
+    maxSteps: 1000,
   },
   {
     name: "verification",
@@ -48,7 +48,7 @@ export const createBuiltInCodingSubagents = (
       "Use this agent to verify implementation work before reporting completion. It runs builds, tests, linters, and adversarial checks to produce a PASS, FAIL, or PARTIAL verdict with evidence.",
     systemPrompt: VERIFICATION_AGENT_PROMPT,
     tools: selectVerificationTools(tools),
-    maxSteps: 12,
+    maxSteps: 1000,
   },
 ];
 

@@ -177,15 +177,13 @@ export const runCodingAgentCli = async (
           tools,
           ...(timeline ? { timeline } : {}),
           ...(parsed.systemPrompt ? { systemPrompt: parsed.systemPrompt } : {}),
-          ...(parsed.memory.length > 0 ? { memory: parsed.memory } : {}),
           ...(parsed.skills.length > 0 ? { skills: parsed.skills } : {}),
         })
-      : createCodingAgent({
+      : await createCodingAgent({
           model: providerSetup.binding,
           tools,
           ...(timeline ? { timeline } : {}),
           ...(parsed.systemPrompt ? { systemPrompt: parsed.systemPrompt } : {}),
-          ...(parsed.memory.length > 0 ? { memory: parsed.memory } : {}),
           ...(parsed.skills.length > 0 ? { skills: parsed.skills } : {}),
         });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import type { ModelClient, ModelResponse, ToolCall } from "@renx/model";
+import type { ModelClient, ModelRequest, ModelResponse, ToolCall } from "@renx/model";
 
 import { AgentRuntime } from "../src/runtime";
 import { AgentError } from "../src/errors";
@@ -369,10 +369,76 @@ describe("AgentRuntime", () => {
     expect(
       result.state.messages.some(
         (m) =>
-          m.role === "tool" && m.toolCallId === "tc_1" && m.content.includes('"code":"TOOL_ERROR"'),
+          m.role === "tool" &&
+          m.toolCallId === "tc_1" &&
+          m.content.includes('Tool "hard-fail" failed with TOOL_ERROR.'),
       ),
     ).toBe(true);
     expect(toolCalled).toBe(1);
+  });
+
+  it("passes validation tool errors to the next model turn as readable tool content", async () => {
+    const requests: ModelRequest[] = [];
+    const responses: ModelResponse[] = [
+      {
+        type: "tool_calls",
+        toolCalls: [
+          {
+            id: "tc_1",
+            name: "Read",
+            input: {
+              file_path: "D:/work/renx-code-v3/packages/agent/src/runtime/agent-runtime.ts",
+              limit: "200",
+            },
+          },
+        ],
+      },
+      { type: "final", output: "recovered after tool error" },
+    ];
+    let index = 0;
+    const modelClient: ModelClient = {
+      generate: async (request) => {
+        requests.push(request);
+        return responses[index++] ?? { type: "final", output: "done" };
+      },
+      stream: async function* () {
+        yield { type: "done" as const };
+      },
+      resolve: () => ({
+        logicalModel: "test",
+        provider: "test",
+        providerModel: "test",
+      }),
+    };
+    const readTool: AgentTool = {
+      name: "Read",
+      description: "Reads files",
+      schema: z.object({
+        file_path: z.string(),
+        limit: z.number().int().positive().optional(),
+      }),
+      invoke: async (): Promise<ToolResult> => ({ content: "unreachable" }),
+    };
+
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient,
+        tools: [readTool],
+      }),
+    );
+
+    const result = await runtime.run(baseCtx({ inputText: "read the file" }));
+
+    expect(result.status).toBe("completed");
+    expect(result.output).toBe("recovered after tool error");
+    expect(requests).toHaveLength(2);
+    const toolMessage = requests[1]?.messages.find(
+      (message) => message.role === "tool" && message.toolCallId === "tc_1",
+    );
+    expect(toolMessage?.content).toContain('Tool "Read" failed with VALIDATION_ERROR.');
+    expect(toolMessage?.content).toContain('Invalid input for tool "Read"');
+    expect(toolMessage?.content).toContain("limit");
+    expect(toolMessage?.content).toContain("expected number");
   });
 
   it("calls afterRun with failed result in run() catch branch", async () => {
@@ -1181,7 +1247,52 @@ describe("AgentRuntime", () => {
     expect(result.output).toBe("done");
     const toolMsg = result.state.messages.find((m) => m.role === "tool" && m.toolCallId === "tc_1");
     expect(toolMsg).toBeDefined();
-    expect(toolMsg?.content).toContain('"code":"TOOL_NOT_FOUND"');
+    expect(toolMsg?.content).toContain('Tool "nonexistent_tool" failed with TOOL_NOT_FOUND.');
+    expect(toolMsg?.content).toContain("Tool not found: nonexistent_tool");
+  });
+
+  it("passes missing-tool errors to the next model turn as readable tool content", async () => {
+    const requests: ModelRequest[] = [];
+    const responses: ModelResponse[] = [
+      {
+        type: "tool_calls",
+        toolCalls: [{ id: "tc_missing", name: "nonexistent_tool", input: {} }],
+      },
+      { type: "final", output: "handled missing tool" },
+    ];
+    let index = 0;
+    const modelClient: ModelClient = {
+      generate: async (request) => {
+        requests.push(request);
+        return responses[index++] ?? { type: "final", output: "done" };
+      },
+      stream: async function* () {
+        yield { type: "done" as const };
+      },
+      resolve: () => ({
+        logicalModel: "test",
+        provider: "test",
+        providerModel: "test",
+      }),
+    };
+
+    const runtime = new AgentRuntime(
+      buildRuntimeConfig({
+        modelClient,
+        tools: [],
+      }),
+    );
+
+    const result = await runtime.run(baseCtx({ inputText: "use missing tool" }));
+
+    expect(result.status).toBe("completed");
+    expect(result.output).toBe("handled missing tool");
+    expect(requests).toHaveLength(2);
+    const toolMessage = requests[1]?.messages.find(
+      (message) => message.role === "tool" && message.toolCallId === "tc_missing",
+    );
+    expect(toolMessage?.content).toContain('Tool "nonexistent_tool" failed with TOOL_NOT_FOUND.');
+    expect(toolMessage?.content).toContain("Tool not found: nonexistent_tool");
   });
 
   it("Middleware lifecycle: beforeModel modifies request, afterModel modifies response", async () => {

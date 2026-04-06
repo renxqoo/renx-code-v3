@@ -28,14 +28,14 @@ export interface MemoryNamedContentEntry {
 export interface MemorySemanticEntry {
   id: string;
   title?: string;
-  description?: string;
+  description?: string | undefined;
   content: string;
-  type?: MemoryTaxonomyType;
-  why?: string;
-  howToApply?: string;
-  tags?: string[];
+  type?: MemoryTaxonomyType | undefined;
+  why?: string | undefined;
+  howToApply?: string | undefined;
+  tags?: string[] | undefined;
   updatedAt: string;
-  scope?: MemoryScope;
+  scope?: MemoryScope | undefined;
 }
 
 export interface WorkingMemoryLayer {

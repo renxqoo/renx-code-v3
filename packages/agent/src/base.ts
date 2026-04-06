@@ -97,7 +97,7 @@ export abstract class AgentBase {
   }
 
   protected getMaxSteps(): number {
-    return 12;
+    return 100000;
   }
 
   protected getTimelineStore(): TimelineStore | undefined {

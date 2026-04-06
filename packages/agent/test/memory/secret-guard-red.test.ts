@@ -9,7 +9,7 @@ import {
 describe("memory secret guard", () => {
   it("detects high-confidence credential patterns", () => {
     const matches = scanMemorySecrets(
-      "github_pat_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcd and ghp_1234567890abcdefghijklmnopqrstuvwxyzABCD",
+      "github_pat_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdefghijklmnopqrstuvwx and ghp_1234567890abcdefghijklmnopqrstuvwxyzABCD",
     );
 
     expect(matches.map((match) => match.ruleId)).toContain("github-fine-grained-pat");

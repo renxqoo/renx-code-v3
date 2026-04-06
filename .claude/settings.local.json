@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx vitest:*)",
+      "Bash(ls:*)",
+      "Bash(git:*)",
+      "Bash(node -e ':*)",
+      "Bash(npx tsc:*)",
+      "Bash(node:*)",
+      "Bash(npx tsx)",
+      "Bash(dir D:\\\\work\\\\renx-code-v3\\\\packages\\\\agent\\\\src\\\\memory\\\\*secret*:*)",
+      "Bash(xargs grep:*)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(pnpm exec:*)",
+      "Bash(pnpm build:*)"
+    ]
+  }
+}

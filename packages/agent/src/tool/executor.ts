@@ -15,6 +15,7 @@ import type {
   ToolRegistry,
   ToolResult,
 } from "./types";
+import { buildToolErrorResult } from "./error-result";
 import { validateToolInput } from "./input-validation";
 
 import type { AggregatedDecision, MiddlewarePipeline } from "../middleware/pipeline";
@@ -362,25 +363,14 @@ export class ToolExecutor {
   }
 
   private buildErrorToolResult(tool: AgentTool, call: ToolCall, error: AgentError): ToolResult {
-    const structured = {
-      ok: false,
-      error: {
-        code: error.code,
-        message: error.message,
-        retryable: error.retryable,
-        details: error.metadata,
-      },
-    };
-    return {
-      content: JSON.stringify(structured),
-      structured,
-      metadata: {
-        ok: false,
-        toolName: tool.name,
-        toolCallId: call.id,
-        errorCode: error.code,
-      },
-    };
+    return buildToolErrorResult({
+      toolName: tool.name,
+      toolCallId: call.id,
+      errorCode: error.code,
+      message: error.message,
+      details: error.metadata,
+      retryable: error.retryable,
+    });
   }
 }
 

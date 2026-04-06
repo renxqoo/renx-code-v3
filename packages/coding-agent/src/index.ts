@@ -5,3 +5,11 @@ export type {
   CodingBuiltInAgentName,
   CreateCodingAgentOptions,
 } from "./types";
+
+// Memory subsystem
+export { createCodingMemorySubsystem, FileSessionMemoryStore } from "./memory";
+export type {
+  CodingAgentMemoryConfig,
+  CodingAgentMemoryState,
+  CodingMemoryOrchestrator,
+} from "./memory";

@@ -1,5 +1,6 @@
 import type { CreateDeepAgentOptions, DeepAgentHandle, DeepAgentSubagent } from "@renx/agent";
 import type { AgentTool } from "@renx/agent";
+import type { CodingAgentMemoryConfig } from "./memory/types";
 
 export type CodingBuiltInAgentName = "general-purpose" | "Explore" | "Plan" | "verification";
 
@@ -13,13 +14,15 @@ export interface CodingBuiltInAgentDefinition {
 
 export interface CreateCodingAgentOptions extends Omit<
   CreateDeepAgentOptions,
-  "systemPrompt" | "tools" | "subagents"
+  "systemPrompt" | "tools" | "subagents" | "memory" | "memorySubsystem" | "sessionMemory"
 > {
   systemPrompt?: CreateDeepAgentOptions["systemPrompt"];
   tools?: AgentTool[];
   subagents?: DeepAgentSubagent[];
+  /** Memory configuration. When provided, memory is persisted and hydrated automatically. */
+  memory?: CodingAgentMemoryConfig;
 }
 
 export interface CodingAgentFactory {
-  (options: CreateCodingAgentOptions): DeepAgentHandle;
+  (options: CreateCodingAgentOptions): Promise<DeepAgentHandle>;
 }
